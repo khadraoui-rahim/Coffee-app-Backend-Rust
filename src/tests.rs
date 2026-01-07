@@ -89,7 +89,16 @@ async fn test_create_coffee_success() {
 
     let response = server.post("/api/coffees").json(&payload).await;
 
-    assert_eq!(response.status_code(), StatusCode::CREATED);
+    // Debug: print response if not successful
+    let status = response.status_code();
+    if status != StatusCode::CREATED {
+        let body = response.text();
+        eprintln!("Response status: {}", status);
+        eprintln!("Response body: {}", body);
+        panic!("Expected 201 CREATED, got {}", status);
+    }
+
+    assert_eq!(status, StatusCode::CREATED);
     
     let coffee: Coffee = response.json();
     assert!(coffee.id > 0, "Coffee should have a valid ID");

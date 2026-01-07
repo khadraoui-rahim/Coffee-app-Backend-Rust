@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 
 /// Represents a coffee product in the database
 /// 
@@ -15,16 +16,26 @@ use sqlx::FromRow;
 /// - 1.8: Size field as text
 /// - 1.9: Liked field as boolean
 /// - 1.10: Timestamp fields (created_at, updated_at)
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct Coffee {
+    #[schema(example = 1)]
     pub id: i32,
+    #[schema(example = "Caffe Mocha")]
     pub name: String,
+    #[schema(example = "Deep Foam")]
     pub coffee_type: String,
-    pub price: i32, // in cents
+    /// Price in cents
+    #[schema(example = 450)]
+    pub price: i32,
+    #[schema(example = 4.5, minimum = 0.0, maximum = 5.0)]
     pub rating: f64,
+    #[schema(example = "hot", pattern = "hot|cold|both")]
     pub temperature: String, // "hot", "cold", or "both"
+    #[schema(example = "Rich chocolate and espresso blend")]
     pub description: String,
+    #[schema(example = "medium")]
     pub size: String,
+    #[schema(example = false)]
     pub liked: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -34,15 +45,24 @@ pub struct Coffee {
 /// 
 /// Used for POST /api/coffees requests (Requirement 2.1)
 /// All fields are required except id and timestamps which are auto-generated
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CreateCoffee {
+    #[schema(example = "Espresso")]
     pub name: String,
+    #[schema(example = "Single Shot")]
     pub coffee_type: String,
+    /// Price in cents
+    #[schema(example = 350)]
     pub price: i32,
+    #[schema(example = 4.5, minimum = 0.0, maximum = 5.0)]
     pub rating: f64,
+    #[schema(example = "hot", pattern = "hot|cold|both")]
     pub temperature: String,
+    #[schema(example = "Strong and bold")]
     pub description: String,
+    #[schema(example = "small")]
     pub size: String,
+    #[schema(example = true)]
     pub liked: bool,
 }
 
@@ -50,15 +70,24 @@ pub struct CreateCoffee {
 /// 
 /// Used for PUT /api/coffees/{id} requests (Requirement 4.1)
 /// All fields are optional to support partial updates
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UpdateCoffee {
+    #[schema(example = "Updated Name")]
     pub name: Option<String>,
+    #[schema(example = "Updated Type")]
     pub coffee_type: Option<String>,
+    /// Price in cents
+    #[schema(example = 500)]
     pub price: Option<i32>,
+    #[schema(example = 5.0, minimum = 0.0, maximum = 5.0)]
     pub rating: Option<f64>,
+    #[schema(example = "cold", pattern = "hot|cold|both")]
     pub temperature: Option<String>,
+    #[schema(example = "Updated description")]
     pub description: Option<String>,
+    #[schema(example = "large")]
     pub size: Option<String>,
+    #[schema(example = true)]
     pub liked: Option<bool>,
 }
 

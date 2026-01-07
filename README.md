@@ -6,6 +6,8 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
 
 - Full CRUD operations for coffee products
 - RESTful API design with JSON responses
+- Interactive API documentation with Swagger UI
+- OpenAPI 3.0 specification
 - PostgreSQL database with SQLx for type-safe queries
 - Automated database migrations
 - Docker containerization for easy deployment
@@ -47,6 +49,8 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
 
 4. The API will be available at `http://localhost:8080`
 
+5. Access the interactive API documentation (Swagger UI) at `http://localhost:8080/swagger-ui`
+
 ## Local Development Setup
 
 1. Install Rust from [rustup.rs](https://rustup.rs/)
@@ -74,6 +78,14 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
    ```
 
 ## API Endpoints
+
+### Interactive API Documentation
+
+The API includes interactive Swagger UI documentation:
+- **Swagger UI**: `http://localhost:8080/swagger-ui`
+- **OpenAPI Spec**: `http://localhost:8080/api-docs/openapi.json`
+
+Use Swagger UI to explore and test all API endpoints directly from your browser.
 
 ### Create Coffee
 ```bash

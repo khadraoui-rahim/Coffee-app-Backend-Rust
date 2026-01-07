@@ -1,0 +1,2 @@
+-- Fix rating column type from DECIMAL to DOUBLE PRECISION
+ALTER TABLE coffees ALTER COLUMN rating TYPE DOUBLE PRECISION;
