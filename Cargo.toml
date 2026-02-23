@@ -22,6 +22,10 @@ utoipa-swagger-ui = { version = "6", features = ["axum"] }
 validator = { version = "0.16", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+jsonwebtoken = "9"
+argon2 = "0.5"
+sha2 = "0.10"
+rand = "0.8"
 
 [dev-dependencies]
 proptest = "1"
