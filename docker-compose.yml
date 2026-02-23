@@ -17,6 +17,23 @@ services:
       timeout: 5s
       retries: 5
 
+  # Separate test database to avoid affecting production data
+  test_db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: coffee_user
+      POSTGRES_PASSWORD: coffee_pass
+      POSTGRES_DB: coffee_test_db
+    volumes:
+      - test_postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coffee_user -d coffee_test_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   api:
     build: .
     environment:
@@ -25,18 +42,48 @@ services:
       PORT: 8080
     ports:
       - "8080:8080"
+    volumes:
+      - ./src:/app/src
+      - ./Cargo.toml:/app/Cargo.toml
+      - ./migrations:/app/migrations
     depends_on:
       db:
         condition: service_healthy
   
-  test:
+  backend:
     build: .
     environment:
       DATABASE_URL: postgresql://coffee_user:coffee_pass@db:5432/coffee_db
-    command: cargo test -- --test-threads=1
+      HOST: 0.0.0.0
+      PORT: 8080
+    volumes:
+      - ./src:/app/src
+      - ./Cargo.toml:/app/Cargo.toml
+      - ./migrations:/app/migrations
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/app/target
     depends_on:
       db:
+        condition: service_healthy
+    command: tail -f /dev/null
+  
+  test:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://coffee_user:coffee_pass@test_db:5432/coffee_test_db
+    volumes:
+      - ./src:/app/src
+      - ./Cargo.toml:/app/Cargo.toml
+      - ./migrations:/app/migrations
+      - cargo_cache:/usr/local/cargo/registry
+      - target_cache:/app/target
+    command: cargo test -- --test-threads=1
+    depends_on:
+      test_db:
         condition: service_healthy
 
 volumes:
   postgres_data:
+  test_postgres_data:
+  cargo_cache:
+  target_cache:

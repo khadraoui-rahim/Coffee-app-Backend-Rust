@@ -51,6 +51,51 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
 
 5. Access the interactive API documentation (Swagger UI) at `http://localhost:8080/swagger-ui`
 
+## Database Setup
+
+### Production and Test Databases
+
+This project uses **separate databases** for production and testing to ensure test data doesn't affect your production data:
+
+- **Production Database**: `coffee_db` (port 5432)
+- **Test Database**: `coffee_test_db` (port 5433)
+
+When running tests with `docker-compose run test`, the test database is automatically used.
+
+### Seeding Production Data
+
+To populate the production database with sample coffee items:
+
+```bash
+# Start the database
+docker-compose up -d db
+
+# Wait for database to be ready, then seed data
+docker-compose exec db psql -U coffee_user -d coffee_db -f /docker-entrypoint-initdb.d/seed_data.sql
+
+# Or manually run the seed script
+docker-compose exec db psql -U coffee_user -d coffee_db < seed_data.sql
+```
+
+Alternatively, you can seed data using psql directly:
+```bash
+psql -U coffee_user -d coffee_db -f seed_data.sql
+```
+
+### Running Tests
+
+Tests use the **separate test database** to avoid affecting production data:
+
+```bash
+# Run all tests (uses test_db automatically)
+docker-compose run --rm test
+
+# Or with cargo directly (make sure TEST_DATABASE_URL is set)
+cargo test
+```
+
+**Important**: Tests will truncate tables in the test database, but production data remains safe.
+
 ## Local Development Setup
 
 1. Install Rust from [rustup.rs](https://rustup.rs/)

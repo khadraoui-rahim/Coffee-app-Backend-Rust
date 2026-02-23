@@ -3,6 +3,10 @@ name = "coffee-api"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "coffee_api"
+path = "src/main.rs"
+
 [dependencies]
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
@@ -15,6 +19,8 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }
 utoipa = { version = "4", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "6", features = ["axum"] }
+validator = { version = "0.16", features = ["derive"] }
+tracing = "0.1"
 
 [dev-dependencies]
 proptest = "1"
