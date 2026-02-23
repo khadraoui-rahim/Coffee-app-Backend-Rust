@@ -18,11 +18,16 @@ pub type DbPool = PgPool;
 /// let pool = create_pool("postgresql://user:pass@localhost/db").await?;
 /// ```
 pub async fn create_pool(database_url: &str) -> Result<DbPool, sqlx::Error> {
-    PgPoolOptions::new()
+    tracing::debug!("Creating database connection pool");
+    
+    let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(3))
         .connect(database_url)
-        .await
+        .await?;
+    
+    tracing::info!("Database connection pool created successfully");
+    Ok(pool)
 }
 
 /// Check if a coffee with the given name already exists
@@ -44,6 +49,8 @@ pub async fn check_duplicate_coffee(
     pool: &PgPool,
     name: &str,
 ) -> Result<bool, ApiError> {
+    tracing::debug!("Checking for duplicate coffee: {}", name);
+    
     let exists: Option<bool> = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM coffees WHERE name = $1)"
     )
@@ -51,7 +58,12 @@ pub async fn check_duplicate_coffee(
     .fetch_one(pool)
     .await?;
     
-    Ok(exists.unwrap_or(false))
+    let is_duplicate = exists.unwrap_or(false);
+    if is_duplicate {
+        tracing::debug!("Duplicate coffee found: {}", name);
+    }
+    
+    Ok(is_duplicate)
 }
 
 /// Check if a coffee with the given name already exists, excluding a specific ID

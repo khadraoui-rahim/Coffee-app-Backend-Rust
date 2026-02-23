@@ -71,11 +71,14 @@ async fn create_coffee(
     State(state): State<AppState>,
     Json(payload): Json<CreateCoffee>,
 ) -> Result<(StatusCode, Json<Coffee>), ApiError> {
+    tracing::debug!("Creating new coffee: {}", payload.name);
+    
     // Validate the request using validator crate
     payload.validate()?;
 
     // Check for duplicate coffee name
     if db::check_duplicate_coffee(&state.db, &payload.name).await? {
+        tracing::warn!("Attempt to create duplicate coffee: {}", payload.name);
         return Err(ApiError::Conflict {
             message: format!("Coffee with name '{}' already exists", payload.name),
         });
@@ -97,6 +100,7 @@ async fn create_coffee(
     .fetch_one(&state.db)
     .await?;
 
+    tracing::info!("Successfully created coffee with id: {}", coffee.id);
     Ok((StatusCode::CREATED, Json(coffee)))
 }
 
@@ -114,6 +118,8 @@ async fn create_coffee(
 async fn get_all_coffees(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Coffee>>, ApiError> {
+    tracing::debug!("Fetching all coffees");
+    
     let coffees = sqlx::query_as::<_, Coffee>(
         r#"
         SELECT id, image_url, name, coffee_type, price, rating
@@ -124,6 +130,7 @@ async fn get_all_coffees(
     .fetch_all(&state.db)
     .await?;
 
+    tracing::debug!("Retrieved {} coffees", coffees.len());
     Ok(Json(coffees))
 }
 
@@ -133,6 +140,8 @@ async fn get_coffees_with_query(
     Query(params): Query<QueryParams>,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<Coffee>>, ApiError> {
+    tracing::debug!("Fetching coffees with query parameters: {:?}", params);
+    
     // 1. Validate query parameters
     let validated = QueryValidator::validate(params)
         .map_err(|_e| ApiError::ValidationError(
@@ -174,6 +183,8 @@ async fn get_coffees_with_query(
         .fetch_all(&state.db)
         .await?;
     
+    tracing::debug!("Query returned {} coffees", coffees.len());
+    
     // Return JSON array of Coffee items with HTTP 200
     Ok(Json(coffees))
 }
@@ -197,6 +208,8 @@ async fn get_coffee_by_id(
     State(state): State<AppState>,
     Path(id): Path<i32>,
 ) -> Result<Json<Coffee>, ApiError> {
+    tracing::debug!("Fetching coffee with id: {}", id);
+    
     let coffee = sqlx::query_as::<_, Coffee>(
         r#"
         SELECT id, image_url, name, coffee_type, price, rating
@@ -207,11 +220,15 @@ async fn get_coffee_by_id(
     .bind(id)
     .fetch_optional(&state.db)
     .await?
-    .ok_or_else(|| ApiError::NotFound {
-        resource: "Coffee".to_string(),
-        id: id.to_string(),
+    .ok_or_else(|| {
+        tracing::debug!("Coffee with id {} not found", id);
+        ApiError::NotFound {
+            resource: "Coffee".to_string(),
+            id: id.to_string(),
+        }
     })?;
 
+    tracing::debug!("Successfully retrieved coffee: {}", coffee.name);
     Ok(Json(coffee))
 }
 
@@ -237,6 +254,8 @@ async fn update_coffee(
     Path(id): Path<i32>,
     Json(payload): Json<UpdateCoffee>,
 ) -> Result<Json<Coffee>, ApiError> {
+    tracing::debug!("Updating coffee with id: {}", id);
+    
     // Validate the request using validator crate
     payload.validate()?;
 
@@ -251,9 +270,12 @@ async fn update_coffee(
     .bind(id)
     .fetch_optional(&mut *tx)
     .await?
-    .ok_or_else(|| ApiError::NotFound {
-        resource: "Coffee".to_string(),
-        id: id.to_string(),
+    .ok_or_else(|| {
+        tracing::debug!("Coffee with id {} not found for update", id);
+        ApiError::NotFound {
+            resource: "Coffee".to_string(),
+            id: id.to_string(),
+        }
     })?;
 
     // If name is being updated and it's different from the current name, check for duplicates
@@ -269,6 +291,7 @@ async fn update_coffee(
             .await?;
             
             if duplicate_exists.unwrap_or(false) {
+                tracing::warn!("Attempt to update coffee {} to duplicate name: {}", id, new_name);
                 // Transaction will be automatically rolled back when tx is dropped
                 return Err(ApiError::Conflict {
                     message: format!("Coffee with name '{}' already exists", new_name),
@@ -302,6 +325,7 @@ async fn update_coffee(
     // Commit the transaction - if this fails, changes are rolled back
     tx.commit().await?;
 
+    tracing::info!("Successfully updated coffee with id: {}", id);
     Ok(Json(updated_coffee))
 }
 
@@ -324,18 +348,22 @@ async fn delete_coffee(
     State(state): State<AppState>,
     Path(id): Path<i32>,
 ) -> Result<StatusCode, ApiError> {
+    tracing::debug!("Deleting coffee with id: {}", id);
+    
     let result = sqlx::query("DELETE FROM coffees WHERE id = $1")
         .bind(id)
         .execute(&state.db)
         .await?;
 
     if result.rows_affected() == 0 {
+        tracing::debug!("Coffee with id {} not found for deletion", id);
         return Err(ApiError::NotFound {
             resource: "Coffee".to_string(),
             id: id.to_string(),
         });
     }
 
+    tracing::info!("Successfully deleted coffee with id: {}", id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -371,7 +399,14 @@ async fn main() {
     // Load environment variables from .env file
     dotenv::dotenv().ok();
 
-    println!("Coffee API - Starting...");
+    // Initialize tracing subscriber for logging
+    // This enables the error!, warn!, info!, debug!, and trace! macros
+    tracing_subscriber::fmt()
+        .with_target(false)
+        .with_level(true)
+        .init();
+
+    tracing::info!("Coffee API - Starting...");
 
     // Get configuration from environment variables
     let database_url = std::env::var("DATABASE_URL")
@@ -382,32 +417,32 @@ async fn main() {
         .unwrap_or_else(|_| "8080".to_string());
 
     // Create database connection pool
-    println!("Connecting to database...");
+    tracing::info!("Connecting to database...");
     let db_pool = db::create_pool(&database_url)
         .await
         .expect("Failed to create database pool");
 
     // Run SQLx migrations on startup
-    println!("Running database migrations...");
+    tracing::info!("Running database migrations...");
     sqlx::migrate!("./migrations")
         .run(&db_pool)
         .await
         .expect("Failed to run database migrations");
-    println!("Migrations completed successfully");
+    tracing::info!("Migrations completed successfully");
 
     // Create the application router
     let app = create_router(db_pool);
 
     // Start the Axum server
     let addr = format!("{}:{}", host, port);
-    println!("Starting server on {}", addr);
+    tracing::info!("Starting server on {}", addr);
     
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("Failed to bind to address");
 
-    println!("Coffee API is running on http://{}", addr);
-    println!("Swagger UI available at http://{}/swagger-ui", addr);
+    tracing::info!("Coffee API is running on http://{}", addr);
+    tracing::info!("Swagger UI available at http://{}/swagger-ui", addr);
     
     axum::serve(listener, app)
         .await
