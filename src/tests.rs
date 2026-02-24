@@ -48,7 +48,23 @@ async fn create_test_app(pool: PgPool) -> TestServer {
     // Clean test data to ensure isolation
     clean_test_data(&pool).await;
     
-    let state = AppState { db: pool };
+    // Initialize auth service for tests
+    let jwt_secret = "test_secret_key_for_testing_purposes".to_string();
+    let token_service = crate::auth::token::TokenService::new(jwt_secret);
+    let password_service = crate::auth::password::PasswordService;
+    let user_repository = crate::auth::repository::UserRepository::new(pool.clone());
+    let token_repository = crate::auth::repository::TokenRepository::new(pool.clone());
+    let auth_service = std::sync::Arc::new(crate::auth::service::AuthService::new(
+        user_repository,
+        token_repository,
+        password_service,
+        token_service,
+    ));
+    
+    let state = AppState { 
+        db: pool,
+        auth_service,
+    };
     
     let app = Router::new()
         .route("/api/coffees", post(create_coffee))

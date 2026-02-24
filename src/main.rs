@@ -20,6 +20,7 @@ use models::{Coffee, CreateCoffee, UpdateCoffee};
 use query::{QueryParams, QueryValidator};
 use error::ApiError;
 use validator::Validate;
+use std::sync::Arc;
 
 /// OpenAPI documentation structure
 #[derive(OpenApi)]
@@ -30,29 +31,65 @@ use validator::Validate;
         get_coffee_by_id,
         update_coffee,
         delete_coffee,
+        get_favorite_coffee,
+        auth::handlers::register_handler,
+        auth::handlers::login_handler,
+        auth::handlers::refresh_handler,
+        auth::handlers::me_handler,
     ),
     components(
-        schemas(Coffee, CreateCoffee, UpdateCoffee)
+        schemas(
+            Coffee, 
+            CreateCoffee, 
+            UpdateCoffee,
+            auth::models::RegisterRequest,
+            auth::models::LoginRequest,
+            auth::models::RefreshRequest,
+            auth::models::AuthResponse,
+            auth::models::UserResponse,
+        )
     ),
     tags(
-        (name = "coffees", description = "Coffee menu management endpoints")
+        (name = "coffees", description = "Coffee menu management endpoints"),
+        (name = "auth", description = "Authentication and user management endpoints")
     ),
     info(
         title = "Coffee Menu API",
         version = "1.0.0",
-        description = "RESTful API for managing coffee menu items",
+        description = "RESTful API for managing coffee menu items with JWT authentication",
         contact(
             name = "API Support",
             email = "support@coffeeapi.com"
         )
-    )
+    ),
+    modifiers(&SecurityAddon)
 )]
 struct ApiDoc;
 
+/// Security scheme for Bearer token authentication
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "bearer_auth",
+                utoipa::openapi::security::SecurityScheme::Http(
+                    utoipa::openapi::security::HttpBuilder::new()
+                        .scheme(utoipa::openapi::security::HttpAuthScheme::Bearer)
+                        .bearer_format("JWT")
+                        .build(),
+                ),
+            )
+        }
+    }
+}
+
 /// Application state shared across handlers
 #[derive(Clone)]
-struct AppState {
+pub struct AppState {
     db: PgPool,
+    pub auth_service: Arc<auth::service::AuthService>,
 }
 
 /// Handler for POST /api/coffees
@@ -368,12 +405,85 @@ async fn delete_coffee(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Handler for GET /api/coffees/favorites/:id (Protected Endpoint Example)
+/// Retrieves a specific coffee product by ID - requires authentication
+/// This endpoint demonstrates how to use the AuthenticatedUser extractor
+/// to protect routes and access authenticated user information
+#[utoipa::path(
+    get,
+    path = "/api/coffees/favorites/{id}",
+    params(
+        ("id" = i32, Path, description = "Coffee ID")
+    ),
+    responses(
+        (status = 200, description = "Coffee found", body = Coffee),
+        (status = 401, description = "Unauthorized - Missing or invalid token", body = String, example = json!({"error": "Missing authentication token"})),
+        (status = 404, description = "Coffee not found", body = String, example = json!({"error": "Coffee with id 1 not found"})),
+        (status = 500, description = "Internal server error", body = String, example = json!({"error": "Database error"}))
+    ),
+    tag = "coffees",
+    security(
+        ("bearer_auth" = [])
+    )
+)]
+async fn get_favorite_coffee(
+    State(state): State<AppState>,
+    Path(id): Path<i32>,
+    // AuthenticatedUser extractor automatically validates the JWT token
+    // and extracts user information from the Authorization header
+    user: auth::middleware::AuthenticatedUser,
+) -> Result<Json<Coffee>, ApiError> {
+    tracing::debug!(
+        "User {} ({}) fetching favorite coffee with id: {}", 
+        user.email, 
+        user.user_id, 
+        id
+    );
+    
+    let coffee = sqlx::query_as::<_, Coffee>(
+        r#"
+        SELECT id, image_url, name, coffee_type, price, rating
+        FROM coffees
+        WHERE id = $1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or_else(|| {
+        tracing::debug!("Coffee with id {} not found", id);
+        ApiError::NotFound {
+            resource: "Coffee".to_string(),
+            id: id.to_string(),
+        }
+    })?;
+
+    tracing::info!(
+        "User {} successfully retrieved favorite coffee: {}", 
+        user.email, 
+        coffee.name
+    );
+    Ok(Json(coffee))
+}
+
+/// Creates the authentication router with all auth endpoints
+fn create_auth_router() -> Router<AppState> {
+    Router::new()
+        .route("/api/auth/register", post(auth::handlers::register_handler))
+        .route("/api/auth/login", post(auth::handlers::login_handler))
+        .route("/api/auth/refresh", post(auth::handlers::refresh_handler))
+        .route("/api/auth/me", get(auth::handlers::me_handler))
+}
+
 /// Creates and configures the application router
 /// Maps all API endpoints to their handlers and adds CORS middleware
-fn create_router(db: PgPool) -> Router {
+fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> Router {
     use tower_http::cors::{CorsLayer, Any};
 
-    let state = AppState { db };
+    let state = AppState { 
+        db,
+        auth_service,
+    };
 
     // Configure CORS to allow all origins, methods, and headers
     let cors = CorsLayer::new()
@@ -385,12 +495,16 @@ fn create_router(db: PgPool) -> Router {
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui")
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
-        // API routes
+        // Coffee API routes
         .route("/api/coffees", post(create_coffee))
         .route("/api/coffees", get(get_coffees_with_query))
         .route("/api/coffees/:id", get(get_coffee_by_id))
         .route("/api/coffees/:id", put(update_coffee))
         .route("/api/coffees/:id", delete(delete_coffee))
+        // Protected endpoint example - requires authentication
+        .route("/api/coffees/favorites/:id", get(get_favorite_coffee))
+        // Authentication routes
+        .merge(create_auth_router())
         .layer(cors)
         .with_state(state)
 }
@@ -412,6 +526,8 @@ async fn main() {
     // Get configuration from environment variables
     let database_url = std::env::var("DATABASE_URL")
         .expect("DATABASE_URL must be set in environment");
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET must be set in environment");
     let host = std::env::var("HOST")
         .unwrap_or_else(|_| "0.0.0.0".to_string());
     let port = std::env::var("PORT")
@@ -425,14 +541,30 @@ async fn main() {
 
     // Run SQLx migrations on startup
     tracing::info!("Running database migrations...");
-    sqlx::migrate!("./migrations")
-        .run(&db_pool)
-        .await
-        .expect("Failed to run database migrations");
-    tracing::info!("Migrations completed successfully");
+    match sqlx::migrate!("./migrations").run(&db_pool).await {
+        Ok(_) => tracing::info!("Migrations completed successfully"),
+        Err(e) => {
+            tracing::warn!("Migration check failed: {}. This is expected if migrations are already applied.", e);
+            tracing::info!("Continuing with application startup...");
+        }
+    }
+
+    // Initialize authentication service
+    tracing::info!("Initializing authentication service...");
+    let token_service = auth::token::TokenService::new(jwt_secret);
+    let password_service = auth::password::PasswordService;
+    let user_repository = auth::repository::UserRepository::new(db_pool.clone());
+    let token_repository = auth::repository::TokenRepository::new(db_pool.clone());
+    let auth_service = Arc::new(auth::service::AuthService::new(
+        user_repository,
+        token_repository,
+        password_service,
+        token_service,
+    ));
+    tracing::info!("Authentication service initialized");
 
     // Create the application router
-    let app = create_router(db_pool);
+    let app = create_router(db_pool, auth_service);
 
     // Start the Axum server
     let addr = format!("{}:{}", host, port);

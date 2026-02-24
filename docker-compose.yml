@@ -38,6 +38,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://coffee_user:coffee_pass@db:5432/coffee_db
+      JWT_SECRET: your-secret-key-here-change-in-production
       HOST: 0.0.0.0
       PORT: 8080
     ports:

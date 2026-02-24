@@ -5,6 +5,9 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
 ## Features
 
 - Full CRUD operations for coffee products
+- JWT-based authentication system with access and refresh tokens
+- User registration and login
+- Protected endpoints with Bearer token authentication
 - RESTful API design with JSON responses
 - Interactive API documentation with Swagger UI
 - OpenAPI 3.0 specification
@@ -42,14 +45,37 @@ A RESTful backend API for a coffee menu application built with Rust, Axum, and P
    cp .env.example .env
    ```
 
-3. Start the services with Docker Compose:
+3. Generate a secure JWT secret (recommended):
+   ```bash
+   # On Linux/Mac:
+   openssl rand -base64 32
+   
+   # On Windows (PowerShell):
+   [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Minimum 0 -Maximum 256 }))
+   ```
+   
+   Update the `JWT_SECRET` in your `.env` file with the generated value.
+
+4. Start the services with Docker Compose:
    ```bash
    docker-compose up --build
    ```
 
-4. The API will be available at `http://localhost:8080`
+5. The API will be available at `http://localhost:8080`
 
-5. Access the interactive API documentation (Swagger UI) at `http://localhost:8080/swagger-ui`
+6. Access the interactive API documentation (Swagger UI) at `http://localhost:8080/swagger-ui`
+
+## Environment Variables
+
+The following environment variables are required:
+
+- `DATABASE_URL`: PostgreSQL connection string (e.g., `postgresql://user:pass@localhost:5432/coffee_db`)
+- `JWT_SECRET`: Secret key for signing JWT tokens (generate with `openssl rand -base64 32`)
+- `HOST`: Server host (default: `0.0.0.0`)
+- `PORT`: Server port (default: `8080`)
+- `RUST_LOG`: Logging level (default: `info`)
+
+See `.env.example` for a complete template.
 
 ## Database Setup
 
@@ -132,7 +158,89 @@ The API includes interactive Swagger UI documentation:
 
 Use Swagger UI to explore and test all API endpoints directly from your browser.
 
-### Create Coffee
+### Authentication Endpoints
+
+#### Register a New User
+```bash
+POST /api/auth/register
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePass123"
+}
+
+Response (201 Created):
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+#### Login
+```bash
+POST /api/auth/login
+Content-Type: application/json
+
+{
+  "email": "user@example.com",
+  "password": "SecurePass123"
+}
+
+Response (200 OK):
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+#### Refresh Tokens
+```bash
+POST /api/auth/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+
+Response (200 OK):
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "user": {
+    "id": 1,
+    "email": "user@example.com",
+    "created_at": "2024-01-01T00:00:00Z"
+  }
+}
+```
+
+#### Get Current User (Protected)
+```bash
+GET /api/auth/me
+Authorization: Bearer <access_token>
+
+Response (200 OK):
+{
+  "id": 1,
+  "email": "user@example.com",
+  "created_at": "2024-01-01T00:00:00Z"
+}
+```
+
+### Coffee Endpoints
+
+#### Create Coffee
 ```bash
 POST /api/coffees
 Content-Type: application/json
@@ -175,6 +283,82 @@ Content-Type: application/json
 DELETE /api/coffees/{id}
 ```
 
+### Get Favorite Coffee (Protected Endpoint Example)
+```bash
+GET /api/coffees/favorites/{id}
+Authorization: Bearer <access_token>
+
+Response (200 OK):
+{
+  "id": 1,
+  "image_url": "https://example.com/coffee.jpg",
+  "name": "Caffe Mocha",
+  "coffee_type": "Deep Foam",
+  "price": 4.53,
+  "rating": 4.8
+}
+
+Response (401 Unauthorized):
+{
+  "error": "Missing authentication token"
+}
+```
+
+This endpoint demonstrates how to use authentication in your handlers. It requires a valid JWT access token in the Authorization header.
+
+## Using Authentication in Your Handlers
+
+To protect an endpoint and access authenticated user information, add the `AuthenticatedUser` extractor to your handler:
+
+```rust
+use crate::auth::middleware::AuthenticatedUser;
+
+async fn my_protected_handler(
+    State(state): State<AppState>,
+    // This extractor automatically validates the JWT token
+    user: AuthenticatedUser,
+) -> Result<Json<MyResponse>, ApiError> {
+    // Access user information
+    let user_id = user.user_id;
+    let email = user.email;
+    
+    // Your handler logic here
+    // ...
+}
+```
+
+The `AuthenticatedUser` extractor will:
+1. Extract the Authorization header from the request
+2. Verify it's in the format "Bearer <token>"
+3. Validate the JWT token signature and expiration
+4. Extract user_id and email from the token claims
+5. Return a 401 Unauthorized error if any step fails
+
+### Example: Making Authenticated Requests
+
+```bash
+# 1. Register or login to get tokens
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"SecurePass123"}'
+
+# Response includes access_token
+# {
+#   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+#   "refresh_token": "...",
+#   "user": {...}
+# }
+
+# 2. Use the access_token to call protected endpoints
+curl -X GET http://localhost:8080/api/coffees/favorites/1 \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# 3. When access_token expires (after 15 minutes), refresh it
+curl -X POST http://localhost:8080/api/auth/refresh \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."}'
+```
+
 ## Data Model
 
 Coffee products include:
@@ -192,9 +376,32 @@ Coffee products include:
 
 ## Validation Rules
 
+### Coffee Validation
 - **Price**: Must be greater than 0
 - **Rating**: Must be between 0.0 and 5.0
 - **Temperature**: Must be "hot", "cold", or "both"
+
+### Authentication Validation
+- **Email**: Must be a valid email format
+- **Password**: Minimum 8 characters, must contain:
+  - At least one uppercase letter (A-Z)
+  - At least one lowercase letter (a-z)
+  - At least one digit (0-9)
+
+## Authentication
+
+The API uses JWT (JSON Web Tokens) for authentication:
+
+- **Access Tokens**: Valid for 15 minutes, used for API requests
+- **Refresh Tokens**: Valid for 7 days, used to obtain new access tokens
+- **Token Format**: Bearer tokens in the Authorization header
+
+To access protected endpoints, include the access token in the Authorization header:
+```
+Authorization: Bearer <your_access_token>
+```
+
+When the access token expires, use the refresh token to obtain a new token pair without requiring the user to log in again.
 
 ## Development
 

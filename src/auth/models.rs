@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use validator::Validate;
+use utoipa::ToSchema;
 
 /// User database model
 #[derive(Debug, Clone, FromRow)]
@@ -15,7 +16,7 @@ pub struct User {
 }
 
 /// User response model (excludes password_hash)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct UserResponse {
     pub id: i32,
     pub email: String,
@@ -43,7 +44,7 @@ pub struct RefreshToken {
 }
 
 /// Registration request DTO
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct RegisterRequest {
     #[validate(email)]
     pub email: String,
@@ -52,7 +53,7 @@ pub struct RegisterRequest {
 }
 
 /// Login request DTO
-#[derive(Debug, Deserialize, Validate)]
+#[derive(Debug, Deserialize, Validate, ToSchema)]
 pub struct LoginRequest {
     #[validate(email)]
     pub email: String,
@@ -60,13 +61,13 @@ pub struct LoginRequest {
 }
 
 /// Token refresh request DTO
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct RefreshRequest {
     pub refresh_token: String,
 }
 
 /// Authentication response DTO
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct AuthResponse {
     pub access_token: String,
     pub refresh_token: String,

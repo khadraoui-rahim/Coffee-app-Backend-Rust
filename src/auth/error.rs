@@ -18,7 +18,8 @@ pub enum AuthError {
     MissingToken,
     EmailAlreadyExists,
     DatabaseError(String),
-    PasswordHashError(String),
+    PasswordHashError,
+    InvalidPasswordFormat(String),
     TokenGenerationError(String),
 }
 
@@ -32,11 +33,14 @@ impl fmt::Display for AuthError {
             AuthError::MissingToken => write!(f, "Missing authentication token"),
             AuthError::EmailAlreadyExists => write!(f, "Email already exists"),
             AuthError::DatabaseError(msg) => write!(f, "Database error: {}", msg),
-            AuthError::PasswordHashError(msg) => write!(f, "Password hashing error: {}", msg),
+            AuthError::PasswordHashError => write!(f, "Password hashing error"),
+            AuthError::InvalidPasswordFormat(msg) => write!(f, "Invalid password: {}", msg),
             AuthError::TokenGenerationError(msg) => write!(f, "Token generation error: {}", msg),
         }
     }
 }
+
+impl std::error::Error for AuthError {}
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
@@ -56,9 +60,10 @@ impl IntoResponse for AuthError {
             AuthError::DatabaseError(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
-            AuthError::PasswordHashError(_) => {
+            AuthError::PasswordHashError => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }
+            AuthError::InvalidPasswordFormat(msg) => (StatusCode::BAD_REQUEST, msg),
             AuthError::TokenGenerationError(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error".to_string())
             }

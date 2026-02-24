@@ -96,17 +96,13 @@ impl SQLQueryBuilder {
             query.push_str(order);
         }
         
-        // Add LIMIT and OFFSET for pagination
-        let param_index = self.params.len() + 1;
-        query.push_str(&format!(" LIMIT ${}", param_index));
-        query.push_str(&format!(" OFFSET ${}", param_index + 1));
+        // Add LIMIT and OFFSET for pagination directly (not as bound parameters)
+        // PostgreSQL requires these to be integers, not text
+        query.push_str(&format!(" LIMIT {}", self.limit));
+        query.push_str(&format!(" OFFSET {}", self.offset));
         
-        // Combine all parameters including limit and offset
-        let mut all_params = self.params.clone();
-        all_params.push(self.limit.to_string());
-        all_params.push(self.offset.to_string());
-        
-        (query, all_params)
+        // Return only the filter parameters (not limit/offset)
+        (query, self.params.clone())
     }
 }
 
@@ -339,7 +335,7 @@ mod tests {
         assert!(query.contains("SELECT * FROM coffees"));
         assert!(query.contains("LIMIT"));
         assert!(query.contains("OFFSET"));
-        assert_eq!(params.len(), 2); // limit and offset
+        assert_eq!(params.len(), 0); // No filter parameters, limit/offset are in query string
     }
 
     #[test]
@@ -390,12 +386,10 @@ mod tests {
     fn test_sql_builder_with_pagination() {
         let mut builder = SQLQueryBuilder::new();
         builder.set_pagination(2, 20);
-        let (query, params) = builder.build();
+        let (query, _params) = builder.build();
         
-        assert!(query.contains("LIMIT"));
-        assert!(query.contains("OFFSET"));
-        assert_eq!(params[params.len() - 2], "20"); // limit
-        assert_eq!(params[params.len() - 1], "20"); // offset (page 2 * 20 items = 20)
+        assert!(query.contains("LIMIT 20"));
+        assert!(query.contains("OFFSET 20")); // page 2 * 20 items = 20
     }
 
     #[test]
