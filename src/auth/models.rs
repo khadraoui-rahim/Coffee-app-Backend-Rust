@@ -6,12 +6,53 @@ use sqlx::FromRow;
 use validator::Validate;
 use utoipa::ToSchema;
 
+/// User role enum for authorization
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "text", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Admin,
+    User,
+}
+
+impl Role {
+    /// Convert role to string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Role::Admin => "admin",
+            Role::User => "user",
+        }
+    }
+    
+    /// Parse role from string
+    pub fn from_str(s: &str) -> Result<Self, String> {
+        match s.to_lowercase().as_str() {
+            "admin" => Ok(Role::Admin),
+            "user" => Ok(Role::User),
+            _ => Err(format!("Invalid role: {}", s)),
+        }
+    }
+}
+
+impl Default for Role {
+    fn default() -> Self {
+        Role::User
+    }
+}
+
+impl std::fmt::Display for Role {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// User database model
 #[derive(Debug, Clone, FromRow)]
 pub struct User {
     pub id: i32,
     pub email: String,
     pub password_hash: String,
+    pub role: Role,
     pub created_at: DateTime<Utc>,
 }
 
@@ -20,6 +61,7 @@ pub struct User {
 pub struct UserResponse {
     pub id: i32,
     pub email: String,
+    pub role: Role,
     pub created_at: DateTime<Utc>,
 }
 
@@ -28,6 +70,7 @@ impl From<User> for UserResponse {
         Self {
             id: user.id,
             email: user.email,
+            role: user.role,
             created_at: user.created_at,
         }
     }

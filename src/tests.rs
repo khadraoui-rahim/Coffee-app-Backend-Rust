@@ -45,6 +45,9 @@ async fn clean_test_data(pool: &PgPool) {
 
 /// Helper function to create a test app with database
 async fn create_test_app(pool: PgPool) -> TestServer {
+    // Set JWT_SECRET for middleware (required by RequireRole middleware)
+    std::env::set_var("JWT_SECRET", "test_secret_key_for_testing_purposes");
+    
     // Clean test data to ensure isolation
     clean_test_data(&pool).await;
     
@@ -62,16 +65,33 @@ async fn create_test_app(pool: PgPool) -> TestServer {
     ));
     
     let state = AppState { 
-        db: pool,
-        auth_service,
+        db: pool.clone(),
+        auth_service: auth_service.clone(),
     };
     
-    let app = Router::new()
+    use axum::middleware::from_fn;
+    
+    // Create protected admin routes with RequireRole middleware
+    let admin_routes = Router::new()
         .route("/api/coffees", post(create_coffee))
-        .route("/api/coffees", get(get_all_coffees))
-        .route("/api/coffees/:id", get(get_coffee_by_id))
         .route("/api/coffees/:id", put(update_coffee))
         .route("/api/coffees/:id", delete(delete_coffee))
+        .route_layer(from_fn(move |req, next| {
+            crate::auth::middleware::RequireRole::admin().middleware(req, next)
+        }));
+    
+    // Create public routes
+    let public_routes = Router::new()
+        .route("/api/coffees", get(get_all_coffees))
+        .route("/api/coffees/:id", get(get_coffee_by_id));
+    
+    let app = Router::new()
+        .merge(admin_routes)
+        .merge(public_routes)
+        .route("/api/auth/register", post(crate::auth::handlers::register_handler))
+        .route("/api/auth/login", post(crate::auth::handlers::login_handler))
+        .route("/api/auth/refresh", post(crate::auth::handlers::refresh_handler))
+        .route("/api/auth/me", get(crate::auth::handlers::me_handler))
         .with_state(state);
 
     TestServer::new(app).unwrap()
@@ -885,3 +905,624 @@ async fn test_transaction_helper_rollback_not_found() {
     assert_eq!(count_after.0, count_before.0, "No data should be created or modified after rollback");
 }
 
+
+// ============================================================================
+// Task 9: Integration Testing and Final Validation
+// ============================================================================
+
+/// Helper function to register a user and return auth tokens
+async fn register_user(server: &TestServer, email: &str, password: &str) -> serde_json::Value {
+    let payload = json!({
+        "email": email,
+        "password": password
+    });
+    
+    let response = server.post("/api/auth/register").json(&payload).await;
+    assert_eq!(response.status_code(), StatusCode::OK, "User registration failed");
+    response.json()
+}
+
+/// Helper function to create an admin user directly in the database
+async fn create_admin_user(pool: &PgPool, email: &str, password: &str) -> i32 {
+    let password_hash = crate::auth::password::PasswordService::hash_password(password)
+        .expect("Failed to hash password");
+    
+    let user_id: i32 = sqlx::query_scalar(
+        r#"
+        INSERT INTO users (email, password_hash, role)
+        VALUES ($1, $2, 'admin')
+        RETURNING id
+        "#
+    )
+    .bind(email)
+    .bind(password_hash)
+    .fetch_one(pool)
+    .await
+    .expect("Failed to create admin user");
+    
+    user_id
+}
+
+/// Helper function to login and get auth tokens
+async fn login_user(server: &TestServer, email: &str, password: &str) -> serde_json::Value {
+    let payload = json!({
+        "email": email,
+        "password": password
+    });
+    
+    let response = server.post("/api/auth/login").json(&payload).await;
+    
+    if response.status_code() != StatusCode::OK {
+        let error_body = response.text();
+        eprintln!("Login failed with status {}: {}", response.status_code(), error_body);
+        panic!("User login failed");
+    }
+    
+    response.json()
+}
+
+/// Helper function to clean auth test data
+async fn clean_auth_test_data(pool: &PgPool) {
+    sqlx::query("TRUNCATE TABLE refresh_tokens RESTART IDENTITY CASCADE")
+        .execute(pool)
+        .await
+        .expect("Failed to clean refresh_tokens");
+    
+    sqlx::query("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
+        .execute(pool)
+        .await
+        .expect("Failed to clean users");
+    
+    sqlx::query("TRUNCATE TABLE coffees RESTART IDENTITY CASCADE")
+        .execute(pool)
+        .await
+        .expect("Failed to clean coffees");
+}
+
+// ============================================================================
+// Task 9.1: End-to-End Authorization Flow Integration Tests
+// ============================================================================
+
+/// Test complete request flow from client to protected route
+/// Validates: Requirements 6.1, 6.2
+#[tokio::test]
+async fn test_e2e_authorization_flow_with_token() {
+    // Set JWT_SECRET for middleware
+    std::env::set_var("JWT_SECRET", "test_secret_key_for_testing_purposes");
+    
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user directly in database
+    let user_id = create_admin_user(&pool, "admin@test.com", "adminpass123").await;
+    eprintln!("Created admin user with id: {}", user_id);
+    
+    // Verify user exists
+    let user_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users WHERE email = 'admin@test.com'")
+        .fetch_one(&pool)
+        .await
+        .expect("Failed to count users");
+    eprintln!("User count: {}", user_count.0);
+    
+    let server = create_test_app(pool).await;
+    
+    // Step 1: Login as admin to get token
+    let auth_response = login_user(&server, "admin@test.com", "adminpass123").await;
+    let access_token = auth_response["access_token"].as_str().unwrap();
+    
+    // Step 2: Use token to access protected route (create coffee)
+    let coffee_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Admin Created Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .json(&coffee_payload)
+        .await;
+    
+    assert_eq!(response.status_code(), StatusCode::CREATED);
+    let created_coffee: Coffee = response.json();
+    assert_eq!(created_coffee.name, "Admin Created Coffee");
+    
+    // Step 3: Verify coffee was created by fetching it
+    let get_response = server.get(&format!("/api/coffees/{}", created_coffee.id)).await;
+    assert_eq!(get_response.status_code(), StatusCode::OK);
+    let fetched_coffee: Coffee = get_response.json();
+    assert_eq!(fetched_coffee.name, "Admin Created Coffee");
+}
+
+/// Test token generation with role through to route access
+/// Validates: Requirements 6.1, 6.2
+#[tokio::test]
+async fn test_token_contains_role_and_grants_access() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user
+    create_admin_user(&pool, "admin@test.com", "adminpass123").await;
+    
+    let server = create_test_app(pool).await;
+    
+    // Login and get token
+    let auth_response = login_user(&server, "admin@test.com", "adminpass123").await;
+    let access_token = auth_response["access_token"].as_str().unwrap();
+    
+    // Use token to create coffee (admin permission required)
+    let coffee_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Role Test Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .json(&coffee_payload)
+        .await;
+    
+    // Admin role should grant access
+    assert_eq!(response.status_code(), StatusCode::CREATED);
+}
+
+/// Test role updates reflected in new tokens
+/// Validates: Requirements 6.5
+#[tokio::test]
+async fn test_role_updates_reflected_in_new_tokens() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create regular user
+    let password_hash = crate::auth::password::PasswordService::hash_password("userpass123").expect("Failed to hash password");
+    
+    let user_id: i32 = sqlx::query_scalar(
+        r#"
+        INSERT INTO users (email, password_hash, role)
+        VALUES ($1, $2, 'user')
+        RETURNING id
+        "#
+    )
+    .bind("user@test.com")
+    .bind(password_hash)
+    .fetch_one(&pool)
+    .await
+    .expect("Failed to create user");
+    
+    let server = create_test_app(pool.clone()).await;
+    
+    // Login as regular user
+    let auth_response = login_user(&server, "user@test.com", "userpass123").await;
+    let access_token = auth_response["access_token"].as_str().unwrap();
+    
+    // Try to create coffee (should fail - user role)
+    let coffee_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Should Fail Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .json(&coffee_payload)
+        .await;
+    
+    assert_eq!(response.status_code(), StatusCode::FORBIDDEN);
+    
+    // Update user role to admin
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("Failed to update user role");
+    
+    // Login again to get new token with updated role
+    let new_auth_response = login_user(&server, "user@test.com", "userpass123").await;
+    let new_access_token = new_auth_response["access_token"].as_str().unwrap();
+    
+    // Try to create coffee again (should succeed - admin role)
+    let coffee_payload2 = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Should Succeed Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let response2 = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", new_access_token).parse().unwrap())
+        .json(&coffee_payload2)
+        .await;
+    
+    assert_eq!(response2.status_code(), StatusCode::CREATED);
+}
+
+// ============================================================================
+// Task 9.2: Coffee Route Protection Integration Tests
+// ============================================================================
+
+/// Test admin can create, update, delete coffee
+/// Validates: Requirements 2.1, 2.2, 2.3
+#[tokio::test]
+async fn test_admin_can_manage_coffee() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user
+    create_admin_user(&pool, "admin@test.com", "adminpass123").await;
+    
+    let server = create_test_app(pool).await;
+    
+    // Login as admin
+    let auth_response = login_user(&server, "admin@test.com", "adminpass123").await;
+    let access_token = auth_response["access_token"].as_str().unwrap();
+    
+    // Test CREATE
+    let create_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Admin Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .json(&create_payload)
+        .await;
+    
+    assert_eq!(create_response.status_code(), StatusCode::CREATED);
+    let created_coffee: Coffee = create_response.json();
+    
+    // Test UPDATE
+    let update_payload = json!({
+        "name": "Updated Admin Coffee",
+        "price": 5.00
+    });
+    
+    let update_response = server
+        .put(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .json(&update_payload)
+        .await;
+    
+    assert_eq!(update_response.status_code(), StatusCode::OK);
+    let updated_coffee: Coffee = update_response.json();
+    assert_eq!(updated_coffee.name, "Updated Admin Coffee");
+    assert_eq!(updated_coffee.price, 5.00);
+    
+    // Test DELETE
+    let delete_response = server
+        .delete(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", access_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(delete_response.status_code(), StatusCode::NO_CONTENT);
+}
+
+/// Test regular user cannot create, update, delete coffee
+/// Validates: Requirements 2.4, 2.5, 2.6
+#[tokio::test]
+async fn test_regular_user_cannot_manage_coffee() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user to set up test data
+    create_admin_user(&pool, "admin@test.com", "adminpass123").await;
+    
+    // Create regular user
+    
+    let password_hash = crate::auth::password::PasswordService::hash_password("userpass123").expect("Failed to hash password");
+    
+    sqlx::query(
+        r#"
+        INSERT INTO users (email, password_hash, role)
+        VALUES ($1, $2, 'user')
+        "#
+    )
+    .bind("user@test.com")
+    .bind(password_hash)
+    .execute(&pool)
+    .await
+    .expect("Failed to create user");
+    
+    let server = create_test_app(pool.clone()).await;
+    
+    // Login as admin to create a coffee for testing
+    let admin_auth = login_user(&server, "admin@test.com", "adminpass123").await;
+    let admin_token = admin_auth["access_token"].as_str().unwrap();
+    
+    let coffee_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Test Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", admin_token).parse().unwrap())
+        .json(&coffee_payload)
+        .await;
+    
+    let created_coffee: Coffee = create_response.json();
+    
+    // Login as regular user
+    let user_auth = login_user(&server, "user@test.com", "userpass123").await;
+    let user_token = user_auth["access_token"].as_str().unwrap();
+    
+    // Test CREATE (should fail)
+    let create_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "User Coffee",
+        "coffee_type": "Latte",
+        "price": 3.50,
+        "rating": 4.0
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", user_token).parse().unwrap())
+        .json(&create_payload)
+        .await;
+    
+    assert_eq!(create_response.status_code(), StatusCode::FORBIDDEN);
+    
+    // Test UPDATE (should fail)
+    let update_payload = json!({
+        "name": "User Updated Coffee"
+    });
+    
+    let update_response = server
+        .put(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", user_token).parse().unwrap())
+        .json(&update_payload)
+        .await;
+    
+    assert_eq!(update_response.status_code(), StatusCode::FORBIDDEN);
+    
+    // Test DELETE (should fail)
+    let delete_response = server
+        .delete(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", user_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(delete_response.status_code(), StatusCode::FORBIDDEN);
+}
+
+/// Test both roles can list and view coffee
+/// Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5, 2.6
+#[tokio::test]
+async fn test_both_roles_can_view_coffee() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user
+    create_admin_user(&pool, "admin@test.com", "adminpass123").await;
+    
+    // Create regular user
+    
+    let password_hash = crate::auth::password::PasswordService::hash_password("userpass123").expect("Failed to hash password");
+    
+    sqlx::query(
+        r#"
+        INSERT INTO users (email, password_hash, role)
+        VALUES ($1, $2, 'user')
+        "#
+    )
+    .bind("user@test.com")
+    .bind(password_hash)
+    .execute(&pool)
+    .await
+    .expect("Failed to create user");
+    
+    let server = create_test_app(pool.clone()).await;
+    
+    // Login as admin and create a coffee
+    let admin_auth = login_user(&server, "admin@test.com", "adminpass123").await;
+    let admin_token = admin_auth["access_token"].as_str().unwrap();
+    
+    let coffee_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Public Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", admin_token).parse().unwrap())
+        .json(&coffee_payload)
+        .await;
+    
+    let created_coffee: Coffee = create_response.json();
+    
+    // Login as regular user
+    let user_auth = login_user(&server, "user@test.com", "userpass123").await;
+    let user_token = user_auth["access_token"].as_str().unwrap();
+    
+    // Test LIST as admin (no auth required, but test with token)
+    let list_response_admin = server
+        .get("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", admin_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(list_response_admin.status_code(), StatusCode::OK);
+    let coffees_admin: Vec<Coffee> = list_response_admin.json();
+    assert!(coffees_admin.len() > 0);
+    
+    // Test LIST as user (no auth required, but test with token)
+    let list_response_user = server
+        .get("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", user_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(list_response_user.status_code(), StatusCode::OK);
+    let coffees_user: Vec<Coffee> = list_response_user.json();
+    assert!(coffees_user.len() > 0);
+    
+    // Test GET by ID as admin (no auth required, but test with token)
+    let get_response_admin = server
+        .get(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", admin_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(get_response_admin.status_code(), StatusCode::OK);
+    let coffee_admin: Coffee = get_response_admin.json();
+    assert_eq!(coffee_admin.name, "Public Coffee");
+    
+    // Test GET by ID as user (no auth required, but test with token)
+    let get_response_user = server
+        .get(&format!("/api/coffees/{}", created_coffee.id))
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", user_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(get_response_user.status_code(), StatusCode::OK);
+    let coffee_user: Coffee = get_response_user.json();
+    assert_eq!(coffee_user.name, "Public Coffee");
+    
+    // Test LIST without auth (should also work - public endpoint)
+    let list_response_no_auth = server.get("/api/coffees").await;
+    assert_eq!(list_response_no_auth.status_code(), StatusCode::OK);
+    
+    // Test GET by ID without auth (should also work - public endpoint)
+    let get_response_no_auth = server.get(&format!("/api/coffees/{}", created_coffee.id)).await;
+    assert_eq!(get_response_no_auth.status_code(), StatusCode::OK);
+}
+
+/// Test protected routes reject requests without tokens
+/// Validates: Requirements 4.2
+#[tokio::test]
+async fn test_protected_routes_reject_no_token() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    let server = create_test_app(pool).await;
+    
+    // Test CREATE without token
+    let create_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "No Token Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .json(&create_payload)
+        .await;
+    
+    assert_eq!(create_response.status_code(), StatusCode::UNAUTHORIZED);
+    
+    // Test UPDATE without token
+    let update_payload = json!({
+        "name": "Updated Name"
+    });
+    
+    let update_response = server
+        .put("/api/coffees/1")
+        .json(&update_payload)
+        .await;
+    
+    assert_eq!(update_response.status_code(), StatusCode::UNAUTHORIZED);
+    
+    // Test DELETE without token
+    let delete_response = server
+        .delete("/api/coffees/1")
+        .await;
+    
+    assert_eq!(delete_response.status_code(), StatusCode::UNAUTHORIZED);
+}
+
+/// Test protected routes reject requests with invalid tokens
+/// Validates: Requirements 4.2
+#[tokio::test]
+async fn test_protected_routes_reject_invalid_token() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    let server = create_test_app(pool).await;
+    
+    let invalid_token = "invalid.jwt.token";
+    
+    // Test CREATE with invalid token
+    let create_payload = json!({
+        "image_url": "https://images.unsplash.com/photo-test",
+        "name": "Invalid Token Coffee",
+        "coffee_type": "Espresso",
+        "price": 4.50,
+        "rating": 4.8
+    });
+    
+    let create_response = server
+        .post("/api/coffees")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", invalid_token).parse().unwrap())
+        .json(&create_payload)
+        .await;
+    
+    assert_eq!(create_response.status_code(), StatusCode::UNAUTHORIZED);
+    
+    // Test UPDATE with invalid token
+    let update_payload = json!({
+        "name": "Updated Name"
+    });
+    
+    let update_response = server
+        .put("/api/coffees/1")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", invalid_token).parse().unwrap())
+        .json(&update_payload)
+        .await;
+    
+    assert_eq!(update_response.status_code(), StatusCode::UNAUTHORIZED);
+    
+    // Test DELETE with invalid token
+    let delete_response = server
+        .delete("/api/coffees/1")
+        .add_header("Authorization".parse().unwrap(), format!("Bearer {}", invalid_token).parse().unwrap())
+        .await;
+    
+    assert_eq!(delete_response.status_code(), StatusCode::UNAUTHORIZED)
+;
+}
+
+
+
+/// Debug test to check if user can be loaded from database
+#[tokio::test]
+async fn test_debug_user_loading() {
+    let pool = create_test_pool().await;
+    clean_auth_test_data(&pool).await;
+    
+    // Create admin user
+    let user_id = create_admin_user(&pool, "debug@test.com", "debugpass123").await;
+    eprintln!("Created user with id: {}", user_id);
+    
+    // Try to load the user
+    let user_repo = crate::auth::repository::UserRepository::new(pool.clone());
+    let user = user_repo.find_by_email("debug@test.com").await;
+    
+    match user {
+        Ok(Some(u)) => {
+            eprintln!("Successfully loaded user: id={}, email={}, role={:?}", u.id, u.email, u.role);
+        }
+        Ok(None) => {
+            eprintln!("User not found!");
+        }
+        Err(e) => {
+            eprintln!("Error loading user: {:?}", e);
+        }
+    }
+}

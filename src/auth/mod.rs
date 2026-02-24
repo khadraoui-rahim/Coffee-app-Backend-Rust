@@ -13,6 +13,6 @@ pub mod token;
 // Re-export commonly used types
 pub use error::AuthError;
 pub use handlers::{login_handler, me_handler, refresh_handler, register_handler};
-pub use middleware::AuthenticatedUser;
-pub use models::{AuthResponse, LoginRequest, RefreshRequest, RegisterRequest, User, UserResponse};
+pub use middleware::{AuthenticatedUser, RequireRole};
+pub use models::{AuthResponse, LoginRequest, RefreshRequest, RegisterRequest, Role, User, UserResponse};
 pub use service::AuthService;

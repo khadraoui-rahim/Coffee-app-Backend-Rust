@@ -18,10 +18,11 @@ impl UserRepository {
     /// Create a new user
     pub async fn create_user(&self, email: &str, password_hash: &str) -> Result<User, AuthError> {
         let user = sqlx::query_as::<_, User>(
-            "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, password_hash, created_at"
+            "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id, email, password_hash, role, created_at"
         )
         .bind(email)
         .bind(password_hash)
+        .bind("user") // Default role
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {
@@ -40,7 +41,7 @@ impl UserRepository {
     /// Find a user by email (case-insensitive)
     pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, AuthError> {
         let user = sqlx::query_as::<_, User>(
-            "SELECT id, email, password_hash, created_at FROM users WHERE LOWER(email) = LOWER($1)"
+            "SELECT id, email, password_hash, role, created_at FROM users WHERE LOWER(email) = LOWER($1)"
         )
         .bind(email)
         .fetch_optional(&self.pool)
@@ -53,7 +54,7 @@ impl UserRepository {
     /// Find a user by ID
     pub async fn find_by_id(&self, id: i32) -> Result<Option<User>, AuthError> {
         let user = sqlx::query_as::<_, User>(
-            "SELECT id, email, password_hash, created_at FROM users WHERE id = $1"
+            "SELECT id, email, password_hash, role, created_at FROM users WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -74,6 +75,56 @@ impl UserRepository {
         .map_err(|e| AuthError::DatabaseError(e.to_string()))?;
 
         Ok(exists.0)
+    }
+
+    /// Create a new user with a specific role
+    pub async fn create_user_with_role(
+        &self,
+        email: &str,
+        password_hash: &str,
+        role: Option<crate::auth::models::Role>,
+    ) -> Result<User, AuthError> {
+        let role = role.unwrap_or_default(); // Use default User role if not specified
+        
+        let user = sqlx::query_as::<_, User>(
+            "INSERT INTO users (email, password_hash, role) VALUES ($1, $2, $3) RETURNING id, email, password_hash, role, created_at"
+        )
+        .bind(email)
+        .bind(password_hash)
+        .bind(role)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            // Check for unique constraint violation
+            if let sqlx::Error::Database(db_err) = &e {
+                if db_err.is_unique_violation() {
+                    return AuthError::EmailAlreadyExists;
+                }
+            }
+            AuthError::DatabaseError(e.to_string())
+        })?;
+
+        Ok(user)
+    }
+
+    /// Update a user's role
+    /// Note: Caller must verify admin permissions and prevent self-role-modification
+    pub async fn update_user_role(
+        &self,
+        user_id: i32,
+        new_role: crate::auth::models::Role,
+    ) -> Result<User, AuthError> {
+        let user = sqlx::query_as::<_, User>(
+            "UPDATE users SET role = $1 WHERE id = $2 RETURNING id, email, password_hash, role, created_at"
+        )
+        .bind(new_role)
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AuthError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| AuthError::DatabaseError("User not found".to_string()))?;
+
+        Ok(user)
     }
 }
 

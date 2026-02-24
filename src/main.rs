@@ -93,7 +93,7 @@ pub struct AppState {
 }
 
 /// Handler for POST /api/coffees
-/// Creates a new coffee product
+/// Creates a new coffee product (Admin only)
 #[utoipa::path(
     post,
     path = "/api/coffees",
@@ -101,9 +101,14 @@ pub struct AppState {
     responses(
         (status = 201, description = "Coffee created successfully", body = Coffee),
         (status = 400, description = "Invalid input data", body = String, example = json!({"error": "Price must be a positive number"})),
+        (status = 401, description = "Unauthorized - Missing or invalid token", body = String, example = json!({"error": "Missing authentication token"})),
+        (status = 403, description = "Forbidden - Insufficient permissions", body = String, example = json!({"error": "Insufficient permissions: required Admin, but user has User"})),
         (status = 500, description = "Internal server error", body = String, example = json!({"error": "Database error"}))
     ),
-    tag = "coffees"
+    tag = "coffees",
+    security(
+        ("bearer_auth" = [])
+    )
 )]
 async fn create_coffee(
     State(state): State<AppState>,
@@ -271,7 +276,7 @@ async fn get_coffee_by_id(
 }
 
 /// Handler for PUT /api/coffees/:id
-/// Updates an existing coffee product
+/// Updates an existing coffee product (Admin only)
 #[utoipa::path(
     put,
     path = "/api/coffees/{id}",
@@ -282,10 +287,15 @@ async fn get_coffee_by_id(
     responses(
         (status = 200, description = "Coffee updated successfully", body = Coffee),
         (status = 400, description = "Invalid input data", body = String, example = json!({"error": "Price must be a positive number"})),
+        (status = 401, description = "Unauthorized - Missing or invalid token", body = String, example = json!({"error": "Missing authentication token"})),
+        (status = 403, description = "Forbidden - Insufficient permissions", body = String, example = json!({"error": "Insufficient permissions: required Admin, but user has User"})),
         (status = 404, description = "Coffee not found", body = String, example = json!({"error": "Coffee with id 1 not found"})),
         (status = 500, description = "Internal server error", body = String, example = json!({"error": "Database error"}))
     ),
-    tag = "coffees"
+    tag = "coffees",
+    security(
+        ("bearer_auth" = [])
+    )
 )]
 async fn update_coffee(
     State(state): State<AppState>,
@@ -368,7 +378,7 @@ async fn update_coffee(
 }
 
 /// Handler for DELETE /api/coffees/:id
-/// Deletes a coffee product
+/// Deletes a coffee product (Admin only)
 #[utoipa::path(
     delete,
     path = "/api/coffees/{id}",
@@ -377,10 +387,15 @@ async fn update_coffee(
     ),
     responses(
         (status = 204, description = "Coffee deleted successfully"),
+        (status = 401, description = "Unauthorized - Missing or invalid token", body = String, example = json!({"error": "Missing authentication token"})),
+        (status = 403, description = "Forbidden - Insufficient permissions", body = String, example = json!({"error": "Insufficient permissions: required Admin, but user has User"})),
         (status = 404, description = "Coffee not found", body = String, example = json!({"error": "Coffee with id 1 not found"})),
         (status = 500, description = "Internal server error", body = String, example = json!({"error": "Database error"}))
     ),
-    tag = "coffees"
+    tag = "coffees",
+    security(
+        ("bearer_auth" = [])
+    )
 )]
 async fn delete_coffee(
     State(state): State<AppState>,
@@ -479,6 +494,7 @@ fn create_auth_router() -> Router<AppState> {
 /// Maps all API endpoints to their handlers and adds CORS middleware
 fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> Router {
     use tower_http::cors::{CorsLayer, Any};
+    use axum::middleware::from_fn;
 
     let state = AppState { 
         db,
@@ -491,18 +507,28 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
         .allow_methods(Any)
         .allow_headers(Any);
 
+    // Create protected admin routes with RequireRole middleware
+    let admin_routes = Router::new()
+        .route("/api/coffees", post(create_coffee))
+        .route("/api/coffees/:id", put(update_coffee))
+        .route("/api/coffees/:id", delete(delete_coffee))
+        .route_layer(from_fn(move |req, next| {
+            auth::middleware::RequireRole::admin().middleware(req, next)
+        }));
+
+    // Create public routes (no authorization required)
+    let public_routes = Router::new()
+        .route("/api/coffees", get(get_coffees_with_query))
+        .route("/api/coffees/:id", get(get_coffee_by_id))
+        .route("/api/coffees/favorites/:id", get(get_favorite_coffee));
+
     Router::new()
         // Swagger UI
         .merge(SwaggerUi::new("/swagger-ui")
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
-        // Coffee API routes
-        .route("/api/coffees", post(create_coffee))
-        .route("/api/coffees", get(get_coffees_with_query))
-        .route("/api/coffees/:id", get(get_coffee_by_id))
-        .route("/api/coffees/:id", put(update_coffee))
-        .route("/api/coffees/:id", delete(delete_coffee))
-        // Protected endpoint example - requires authentication
-        .route("/api/coffees/favorites/:id", get(get_favorite_coffee))
+        // Merge admin and public routes
+        .merge(admin_routes)
+        .merge(public_routes)
         // Authentication routes
         .merge(create_auth_router())
         .layer(cors)

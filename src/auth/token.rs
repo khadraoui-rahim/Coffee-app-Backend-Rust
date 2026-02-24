@@ -1,6 +1,7 @@
 // JWT token generation and validation service
 
 use crate::auth::error::AuthError;
+use crate::auth::models::Role;
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct Claims {
     pub sub: i32,        // user_id
     pub email: String,
+    pub role: Role,      // user role for authorization
     pub exp: i64,        // expiration timestamp
     pub iat: i64,        // issued at timestamp
 }
@@ -34,13 +36,14 @@ impl TokenService {
     }
 
     /// Generate an access token (15 minutes)
-    pub fn generate_access_token(&self, user_id: i32, email: &str) -> Result<String, AuthError> {
+    pub fn generate_access_token(&self, user_id: i32, email: &str, role: Role) -> Result<String, AuthError> {
         let now = Utc::now().timestamp();
         let exp = now + self.access_token_duration;
 
         let claims = Claims {
             sub: user_id,
             email: email.to_string(),
+            role,
             iat: now,
             exp,
         };
@@ -54,13 +57,14 @@ impl TokenService {
     }
 
     /// Generate a refresh token (7 days)
-    pub fn generate_refresh_token(&self, user_id: i32, email: &str) -> Result<String, AuthError> {
+    pub fn generate_refresh_token(&self, user_id: i32, email: &str, role: Role) -> Result<String, AuthError> {
         let now = Utc::now().timestamp();
         let exp = now + self.refresh_token_duration;
 
         let claims = Claims {
             sub: user_id,
             email: email.to_string(),
+            role,
             iat: now,
             exp,
         };
@@ -104,9 +108,9 @@ impl TokenService {
     }
 
     /// Generate both access and refresh tokens
-    pub fn generate_token_pair(&self, user_id: i32, email: &str) -> Result<(String, String), AuthError> {
-        let access_token = self.generate_access_token(user_id, email)?;
-        let refresh_token = self.generate_refresh_token(user_id, email)?;
+    pub fn generate_token_pair(&self, user_id: i32, email: &str, role: Role) -> Result<(String, String), AuthError> {
+        let access_token = self.generate_access_token(user_id, email, role)?;
+        let refresh_token = self.generate_refresh_token(user_id, email, role)?;
         Ok((access_token, refresh_token))
     }
 }
@@ -126,7 +130,7 @@ mod tests {
     #[test]
     fn test_access_token_expiration_is_15_minutes() {
         let service = test_token_service();
-        let token = service.generate_access_token(1, "test@example.com").unwrap();
+        let token = service.generate_access_token(1, "test@example.com", Role::User).unwrap();
         let claims = service.validate_access_token(&token).unwrap();
         
         // Verify expiration is 15 minutes (900 seconds) from issued time
@@ -138,7 +142,7 @@ mod tests {
     #[test]
     fn test_refresh_token_expiration_is_7_days() {
         let service = test_token_service();
-        let token = service.generate_refresh_token(1, "test@example.com").unwrap();
+        let token = service.generate_refresh_token(1, "test@example.com", Role::User).unwrap();
         let claims = service.validate_refresh_token(&token).unwrap();
         
         // Verify expiration is 7 days (604800 seconds) from issued time
@@ -152,23 +156,26 @@ mod tests {
         let service = test_token_service();
         let user_id = 42;
         let email = "user@example.com";
+        let role = Role::Admin;
         
-        let access_token = service.generate_access_token(user_id, email).unwrap();
+        let access_token = service.generate_access_token(user_id, email, role).unwrap();
         let access_claims = service.validate_access_token(&access_token).unwrap();
         assert_eq!(access_claims.sub, user_id);
         assert_eq!(access_claims.email, email);
+        assert_eq!(access_claims.role, role);
         
-        let refresh_token = service.generate_refresh_token(user_id, email).unwrap();
+        let refresh_token = service.generate_refresh_token(user_id, email, role).unwrap();
         let refresh_claims = service.validate_refresh_token(&refresh_token).unwrap();
         assert_eq!(refresh_claims.sub, user_id);
         assert_eq!(refresh_claims.email, email);
+        assert_eq!(refresh_claims.role, role);
     }
 
     // Feature: authentication-system, Property 5: Successful registration returns token pair
     #[test]
     fn test_generate_token_pair() {
         let service = test_token_service();
-        let (access_token, refresh_token) = service.generate_token_pair(1, "test@example.com").unwrap();
+        let (access_token, refresh_token) = service.generate_token_pair(1, "test@example.com", Role::User).unwrap();
         
         // Both tokens should be valid
         assert!(service.validate_access_token(&access_token).is_ok());
@@ -197,7 +204,7 @@ mod tests {
         let service2 = TokenService::new("secret2".to_string());
         
         // Generate token with service1
-        let token = service1.generate_access_token(1, "test@example.com").unwrap();
+        let token = service1.generate_access_token(1, "test@example.com", Role::User).unwrap();
         
         // service1 should validate it
         assert!(service1.validate_access_token(&token).is_ok());
@@ -216,7 +223,7 @@ mod tests {
             email in "[a-z]{3,10}@[a-z]{3,10}\\.(com|org|net)"
         ) {
             let service = test_token_service();
-            let token = service.generate_access_token(user_id, &email)?;
+            let token = service.generate_access_token(user_id, &email, Role::User)?;
             let claims = service.validate_access_token(&token)?;
             
             let duration = claims.exp - claims.iat;
@@ -230,7 +237,7 @@ mod tests {
             email in "[a-z]{3,10}@[a-z]{3,10}\\.(com|org|net)"
         ) {
             let service = test_token_service();
-            let token = service.generate_refresh_token(user_id, &email)?;
+            let token = service.generate_refresh_token(user_id, &email, Role::User)?;
             let claims = service.validate_refresh_token(&token)?;
             
             let duration = claims.exp - claims.iat;
@@ -241,19 +248,23 @@ mod tests {
         #[test]
         fn prop_token_claims_contain_identity(
             user_id in 1i32..1000000,
-            email in "[a-z]{3,10}@[a-z]{3,10}\\.(com|org|net)"
+            email in "[a-z]{3,10}@[a-z]{3,10}\\.(com|org|net)",
+            is_admin in proptest::bool::ANY
         ) {
             let service = test_token_service();
+            let role = if is_admin { Role::Admin } else { Role::User };
             
-            let access_token = service.generate_access_token(user_id, &email)?;
+            let access_token = service.generate_access_token(user_id, &email, role)?;
             let access_claims = service.validate_access_token(&access_token)?;
             prop_assert_eq!(access_claims.sub, user_id);
             prop_assert_eq!(access_claims.email, email.clone());
+            prop_assert_eq!(access_claims.role, role);
             
-            let refresh_token = service.generate_refresh_token(user_id, &email)?;
+            let refresh_token = service.generate_refresh_token(user_id, &email, role)?;
             let refresh_claims = service.validate_refresh_token(&refresh_token)?;
             prop_assert_eq!(refresh_claims.sub, user_id);
             prop_assert_eq!(refresh_claims.email, email);
+            prop_assert_eq!(refresh_claims.role, role);
         }
 
         // Feature: authentication-system, Property 13: Valid access tokens are accepted
@@ -264,11 +275,11 @@ mod tests {
         ) {
             let service = test_token_service();
             
-            let access_token = service.generate_access_token(user_id, &email)?;
+            let access_token = service.generate_access_token(user_id, &email, Role::User)?;
             let result = service.validate_access_token(&access_token);
             prop_assert!(result.is_ok());
             
-            let refresh_token = service.generate_refresh_token(user_id, &email)?;
+            let refresh_token = service.generate_refresh_token(user_id, &email, Role::User)?;
             let result = service.validate_refresh_token(&refresh_token);
             prop_assert!(result.is_ok());
         }
