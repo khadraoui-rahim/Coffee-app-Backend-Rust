@@ -6,6 +6,7 @@ mod error;
 mod validation;
 mod reviews;
 mod orders;
+mod business_rules;
 
 use axum::{
     extract::{Path, Query, State},
@@ -95,6 +96,7 @@ pub struct AppState {
     pub review_service: reviews::ReviewService,
     pub order_service: orders::OrderService,
     pub order_items_repo: orders::OrderItemsRepository,
+    pub business_rules_engine: Arc<business_rules::BusinessRulesEngine>,
 }
 
 /// Handler for POST /api/coffees
@@ -497,7 +499,7 @@ fn create_auth_router() -> Router<AppState> {
 
 /// Creates and configures the application router
 /// Maps all API endpoints to their handlers and adds CORS middleware
-fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> Router {
+async fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> Router {
     use tower_http::cors::{CorsLayer, Any};
     use axum::middleware::from_fn;
 
@@ -506,11 +508,27 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
     let rating_calculator = reviews::RatingCalculator::new(review_repository.clone());
     let review_service = reviews::ReviewService::new(review_repository, rating_calculator);
 
-    // Initialize order service
+    // Initialize business rules engine
+    tracing::info!("Initializing business rules engine...");
+    let business_rules_engine = Arc::new(business_rules::BusinessRulesEngine::new(db.clone()));
+    
+    // Warm up the cache
+    tracing::info!("Warming business rules cache...");
+    if let Err(e) = business_rules_engine.warm_cache().await {
+        tracing::warn!("Failed to warm cache: {}. Continuing with cold cache.", e);
+    }
+    tracing::info!("Business rules engine initialized");
+
+    // Initialize order service with business rules
     let orders_repo = orders::OrdersRepository::new(db.clone());
     let order_items_repo = orders::OrderItemsRepository::new(db.clone());
     let coffee_repo = orders::CoffeeRepository::new(db.clone());
-    let order_service = orders::OrderService::new(orders_repo, order_items_repo.clone(), coffee_repo);
+    let order_service = orders::OrderService::with_business_rules(
+        orders_repo,
+        order_items_repo.clone(),
+        coffee_repo,
+        business_rules_engine.clone(),
+    );
 
     let state = AppState { 
         db,
@@ -518,6 +536,7 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
         review_service,
         order_service,
         order_items_repo,
+        business_rules_engine,
     };
 
     // Configure CORS to allow all origins, methods, and headers
@@ -533,6 +552,12 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
         .route("/api/coffees/:id", delete(delete_coffee))
         .route("/api/orders/:id/status", patch(orders::update_order_status_handler))
         .route("/api/orders/:id/payment", patch(orders::update_payment_status_handler))
+        .route("/api/business-rules/availability", post(business_rules::handlers::update_availability_handler))
+        .route("/api/business-rules/pricing", post(business_rules::handlers::create_pricing_rule_handler))
+        .route("/api/business-rules/pricing/:id", put(business_rules::handlers::update_pricing_rule_handler))
+        .route("/api/business-rules/pricing/:id", delete(business_rules::handlers::delete_pricing_rule_handler))
+        .route("/api/business-rules/loyalty-config", put(business_rules::handlers::update_loyalty_config_handler))
+        .route("/api/business-rules/prep-time/:id", put(business_rules::handlers::update_prep_time_handler))
         .route_layer(from_fn(move |req, next| {
             auth::middleware::RequireRole::admin().middleware(req, next)
         }));
@@ -551,7 +576,11 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
         .route("/api/coffees", get(get_coffees_with_query))
         .route("/api/coffees/:id", get(get_coffee_by_id))
         .route("/api/coffees/favorites/:id", get(get_favorite_coffee))
-        .route("/api/coffees/:id/reviews", get(reviews::get_reviews_for_coffee_handler));
+        .route("/api/coffees/:id/reviews", get(reviews::get_reviews_for_coffee_handler))
+        .route("/api/business-rules/availability/:id", get(business_rules::handlers::get_availability_handler))
+        .route("/api/business-rules/pricing", get(business_rules::handlers::list_pricing_rules_handler))
+        .route("/api/business-rules/loyalty-config", get(business_rules::handlers::get_loyalty_config_handler))
+        .route("/api/business-rules/metrics", get(business_rules::handlers::get_metrics_handler));
 
     Router::new()
         // Swagger UI
@@ -622,7 +651,7 @@ async fn main() {
     tracing::info!("Authentication service initialized");
 
     // Create the application router
-    let app = create_router(db_pool, auth_service);
+    let app = create_router(db_pool, auth_service).await;
 
     // Start the Axum server
     let addr = format!("{}:{}", host, port);

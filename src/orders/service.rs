@@ -1,7 +1,12 @@
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
+use crate::business_rules::{
+    BusinessRulesEngine, CombinationStrategy, LoyaltyOrderItem, OrderItem as BROrderItem,
+    PrepTimeOrderItem, PricingOrderItem,
+};
 use crate::orders::{
     CoffeeRepository, CreateOrderRequest, Order, OrderError, OrderItem, OrderItemResponse,
     OrderItemsRepository, OrderResponse, OrdersRepository, OrderStatus, PaymentStatus,
@@ -14,6 +19,7 @@ pub struct OrderService {
     orders_repo: OrdersRepository,
     order_items_repo: OrderItemsRepository,
     coffee_repo: CoffeeRepository,
+    business_rules_engine: Option<Arc<BusinessRulesEngine>>,
 }
 
 impl OrderService {
@@ -27,6 +33,22 @@ impl OrderService {
             orders_repo,
             order_items_repo,
             coffee_repo,
+            business_rules_engine: None,
+        }
+    }
+
+    /// Create a new OrderService with business rules engine
+    pub fn with_business_rules(
+        orders_repo: OrdersRepository,
+        order_items_repo: OrderItemsRepository,
+        coffee_repo: CoffeeRepository,
+        business_rules_engine: Arc<BusinessRulesEngine>,
+    ) -> Self {
+        Self {
+            orders_repo,
+            order_items_repo,
+            coffee_repo,
+            business_rules_engine: Some(business_rules_engine),
         }
     }
 
@@ -45,6 +67,10 @@ impl OrderService {
     /// - All quantities must be positive
     /// - Price snapshots are captured from current coffee prices
     /// - Order starts with "pending" status and "unpaid" payment status
+    /// - If business rules engine is available:
+    ///   - Validates item availability
+    ///   - Calculates dynamic pricing with rules
+    ///   - Estimates preparation time
     pub async fn create_order(
         &self,
         user_id: i32,
@@ -107,8 +133,77 @@ impl OrderService {
             ));
         }
 
-        // Calculate total price
-        let total_price = PriceCalculator::calculate_total(&subtotals);
+        // Calculate base total price
+        let base_price = PriceCalculator::calculate_total(&subtotals);
+        let mut final_price = base_price;
+        let mut estimated_prep_minutes: Option<i32> = None;
+
+        // Generate a temporary order ID for business rules validation
+        let temp_order_id = Uuid::new_v4();
+
+        // If business rules engine is available, apply business rules
+        if let Some(ref engine) = self.business_rules_engine {
+            // 1. Validate availability
+            let br_items: Vec<BROrderItem> = request
+                .items
+                .iter()
+                .map(|item| BROrderItem {
+                    coffee_id: item.coffee_item_id,
+                    quantity: item.quantity as u32,
+                })
+                .collect();
+
+            let validation_result = engine
+                .validate_order(temp_order_id, &br_items)
+                .await
+                .map_err(|e| OrderError::ValidationError(format!("Business rules validation failed: {}", e)))?;
+
+            if !validation_result.is_valid {
+                let error_messages: Vec<String> = validation_result
+                    .errors
+                    .iter()
+                    .map(|e| format!("{}: {}", e.coffee_id, e.reason))
+                    .collect();
+                return Err(OrderError::ValidationError(format!(
+                    "Items unavailable: {}",
+                    error_messages.join(", ")
+                )));
+            }
+
+            // 2. Calculate pricing with rules
+            let pricing_items: Vec<PricingOrderItem> = order_items
+                .iter()
+                .map(|(coffee_id, quantity, price, _)| PricingOrderItem {
+                    coffee_id: *coffee_id,
+                    quantity: *quantity as u32,
+                    base_price: *price,
+                })
+                .collect();
+
+            let pricing_result = engine
+                .calculate_price(temp_order_id, &pricing_items, CombinationStrategy::BestPrice)
+                .await
+                .map_err(|e| OrderError::ValidationError(format!("Pricing calculation failed: {}", e)))?;
+
+            final_price = pricing_result.final_price;
+
+            // 3. Estimate prep time
+            let prep_items: Vec<PrepTimeOrderItem> = request
+                .items
+                .iter()
+                .map(|item| PrepTimeOrderItem {
+                    coffee_id: item.coffee_item_id,
+                    quantity: item.quantity as u32,
+                })
+                .collect();
+
+            let prep_estimate = engine
+                .estimate_prep_time(&prep_items)
+                .await
+                .map_err(|e| OrderError::ValidationError(format!("Prep time estimation failed: {}", e)))?;
+
+            estimated_prep_minutes = Some(prep_estimate.estimated_minutes);
+        }
 
         // Create order with pending status and unpaid payment status
         let order = self
@@ -117,10 +212,13 @@ impl OrderService {
                 user_id,
                 OrderStatus::Pending,
                 PaymentStatus::Unpaid,
-                total_price,
+                final_price,
                 order_items,
             )
             .await?;
+
+        // TODO: Store base_price, final_price, and estimated_prep_minutes in orders table
+        // This requires a database migration to add these columns
 
         Ok(order)
     }
@@ -226,6 +324,7 @@ impl OrderService {
     /// - Order must exist
     /// - Status transition must be valid according to StatusMachine
     /// - updated_at timestamp is automatically updated
+    /// - If transitioning to Completed and business rules engine is available, awards loyalty points
     pub async fn update_order_status(
         &self,
         order_id: Uuid,
@@ -247,6 +346,36 @@ impl OrderService {
             .orders_repo
             .update_status(order_id, new_status)
             .await?;
+
+        // If transitioning to Completed, award loyalty points
+        if new_status == OrderStatus::Completed {
+            if let Some(ref engine) = self.business_rules_engine {
+                // Fetch order items to calculate loyalty points
+                let items = self.order_items_repo.find_by_order_id(order_id).await?;
+                
+                let loyalty_items: Vec<LoyaltyOrderItem> = items
+                    .iter()
+                    .map(|item| LoyaltyOrderItem {
+                        coffee_id: item.coffee_item_id,
+                        quantity: item.quantity as u32,
+                        price: item.price_snapshot,
+                    })
+                    .collect();
+
+                // Award loyalty points (ignore errors to not block order completion)
+                match engine
+                    .award_loyalty_points(order_id, order.user_id, order.total_price, &loyalty_items)
+                    .await
+                {
+                    Ok(points) => {
+                        tracing::info!("Awarded {} loyalty points to user {} for order {}", points, order.user_id, order_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to award loyalty points for order {}: {}", order_id, e);
+                    }
+                }
+            }
+        }
 
         Ok(updated_order)
     }
