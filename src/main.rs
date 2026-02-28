@@ -4,6 +4,7 @@ mod models;
 mod query;
 mod error;
 mod validation;
+mod reviews;
 
 use axum::{
     extract::{Path, Query, State},
@@ -90,6 +91,7 @@ impl utoipa::Modify for SecurityAddon {
 pub struct AppState {
     db: PgPool,
     pub auth_service: Arc<auth::service::AuthService>,
+    pub review_service: reviews::ReviewService,
 }
 
 /// Handler for POST /api/coffees
@@ -496,9 +498,15 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
     use tower_http::cors::{CorsLayer, Any};
     use axum::middleware::from_fn;
 
+    // Initialize review service
+    let review_repository = reviews::ReviewRepository::new(db.clone());
+    let rating_calculator = reviews::RatingCalculator::new(review_repository.clone());
+    let review_service = reviews::ReviewService::new(review_repository, rating_calculator);
+
     let state = AppState { 
         db,
         auth_service,
+        review_service,
     };
 
     // Configure CORS to allow all origins, methods, and headers
@@ -516,11 +524,18 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
             auth::middleware::RequireRole::admin().middleware(req, next)
         }));
 
+    // Create protected user routes (authenticated users only)
+    let user_routes = Router::new()
+        .route("/api/reviews", post(reviews::create_review_handler))
+        .route("/api/reviews/:id", put(reviews::update_review_handler))
+        .route("/api/reviews/:id", delete(reviews::delete_review_handler));
+
     // Create public routes (no authorization required)
     let public_routes = Router::new()
         .route("/api/coffees", get(get_coffees_with_query))
         .route("/api/coffees/:id", get(get_coffee_by_id))
-        .route("/api/coffees/favorites/:id", get(get_favorite_coffee));
+        .route("/api/coffees/favorites/:id", get(get_favorite_coffee))
+        .route("/api/coffees/:id/reviews", get(reviews::get_reviews_for_coffee_handler));
 
     Router::new()
         // Swagger UI
@@ -528,6 +543,7 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
             .url("/api-docs/openapi.json", ApiDoc::openapi()))
         // Merge admin and public routes
         .merge(admin_routes)
+        .merge(user_routes)
         .merge(public_routes)
         // Authentication routes
         .merge(create_auth_router())

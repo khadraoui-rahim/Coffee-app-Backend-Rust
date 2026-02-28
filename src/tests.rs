@@ -64,9 +64,15 @@ async fn create_test_app(pool: PgPool) -> TestServer {
         token_service,
     ));
     
+    // Initialize review service
+    let review_repository = crate::reviews::ReviewRepository::new(pool.clone());
+    let rating_calculator = crate::reviews::RatingCalculator::new(review_repository.clone());
+    let review_service = crate::reviews::ReviewService::new(review_repository, rating_calculator);
+    
     let state = AppState { 
         db: pool.clone(),
         auth_service: auth_service.clone(),
+        review_service,
     };
     
     use axum::middleware::from_fn;
