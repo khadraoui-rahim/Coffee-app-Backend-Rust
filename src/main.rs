@@ -5,12 +5,13 @@ mod query;
 mod error;
 mod validation;
 mod reviews;
+mod orders;
 
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, get, post, put},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 use sqlx::PgPool;
@@ -92,6 +93,8 @@ pub struct AppState {
     db: PgPool,
     pub auth_service: Arc<auth::service::AuthService>,
     pub review_service: reviews::ReviewService,
+    pub order_service: orders::OrderService,
+    pub order_items_repo: orders::OrderItemsRepository,
 }
 
 /// Handler for POST /api/coffees
@@ -503,10 +506,18 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
     let rating_calculator = reviews::RatingCalculator::new(review_repository.clone());
     let review_service = reviews::ReviewService::new(review_repository, rating_calculator);
 
+    // Initialize order service
+    let orders_repo = orders::OrdersRepository::new(db.clone());
+    let order_items_repo = orders::OrderItemsRepository::new(db.clone());
+    let coffee_repo = orders::CoffeeRepository::new(db.clone());
+    let order_service = orders::OrderService::new(orders_repo, order_items_repo.clone(), coffee_repo);
+
     let state = AppState { 
         db,
         auth_service,
         review_service,
+        order_service,
+        order_items_repo,
     };
 
     // Configure CORS to allow all origins, methods, and headers
@@ -520,6 +531,8 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
         .route("/api/coffees", post(create_coffee))
         .route("/api/coffees/:id", put(update_coffee))
         .route("/api/coffees/:id", delete(delete_coffee))
+        .route("/api/orders/:id/status", patch(orders::update_order_status_handler))
+        .route("/api/orders/:id/payment", patch(orders::update_payment_status_handler))
         .route_layer(from_fn(move |req, next| {
             auth::middleware::RequireRole::admin().middleware(req, next)
         }));
@@ -528,7 +541,10 @@ fn create_router(db: PgPool, auth_service: Arc<auth::service::AuthService>) -> R
     let user_routes = Router::new()
         .route("/api/reviews", post(reviews::create_review_handler))
         .route("/api/reviews/:id", put(reviews::update_review_handler))
-        .route("/api/reviews/:id", delete(reviews::delete_review_handler));
+        .route("/api/reviews/:id", delete(reviews::delete_review_handler))
+        .route("/api/orders", post(orders::create_order_handler))
+        .route("/api/orders", get(orders::get_order_history_handler))
+        .route("/api/orders/:id", get(orders::get_order_by_id_handler));
 
     // Create public routes (no authorization required)
     let public_routes = Router::new()

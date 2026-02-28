@@ -69,10 +69,18 @@ async fn create_test_app(pool: PgPool) -> TestServer {
     let rating_calculator = crate::reviews::RatingCalculator::new(review_repository.clone());
     let review_service = crate::reviews::ReviewService::new(review_repository, rating_calculator);
     
+    // Initialize order service
+    let orders_repo = crate::orders::OrdersRepository::new(pool.clone());
+    let order_items_repo = crate::orders::OrderItemsRepository::new(pool.clone());
+    let coffee_repo = crate::orders::CoffeeRepository::new(pool.clone());
+    let order_service = crate::orders::OrderService::new(orders_repo, order_items_repo.clone(), coffee_repo);
+    
     let state = AppState { 
         db: pool.clone(),
         auth_service: auth_service.clone(),
         review_service,
+        order_service,
+        order_items_repo,
     };
     
     use axum::middleware::from_fn;
