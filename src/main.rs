@@ -7,6 +7,7 @@ mod validation;
 mod reviews;
 mod orders;
 mod business_rules;
+mod analytics;
 
 use axum::{
     extract::{Path, Query, State},
