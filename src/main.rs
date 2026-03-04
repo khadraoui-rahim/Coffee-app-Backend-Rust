@@ -8,6 +8,9 @@ mod reviews;
 mod orders;
 mod business_rules;
 mod analytics;
+mod config;
+mod cache;
+mod pagination;
 
 use axum::{
     extract::{Path, Query, State},

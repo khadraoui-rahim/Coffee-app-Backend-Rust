@@ -1,6 +1,7 @@
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use std::time::Duration;
 use crate::error::ApiError;
+use crate::config::ConnectionPoolConfig;
 
 /// Type alias for the PostgreSQL connection pool
 pub type DbPool = PgPool;
@@ -27,6 +28,37 @@ pub async fn create_pool(database_url: &str) -> Result<DbPool, sqlx::Error> {
         .await?;
     
     tracing::info!("Database connection pool created successfully");
+    Ok(pool)
+}
+
+/// Creates and configures a PostgreSQL connection pool with custom configuration
+///
+/// # Arguments
+/// * `database_url` - PostgreSQL connection string
+/// * `config` - Connection pool configuration
+///
+/// # Returns
+/// * `Result<DbPool>` - Configured connection pool or error
+pub async fn create_pool_with_config(
+    database_url: &str,
+    config: &ConnectionPoolConfig,
+) -> Result<DbPool, sqlx::Error> {
+    tracing::debug!("Creating database connection pool with custom config");
+    
+    let pool = PgPoolOptions::new()
+        .min_connections(config.min_connections)
+        .max_connections(config.max_connections)
+        .acquire_timeout(config.connect_timeout)
+        .idle_timeout(Some(config.idle_timeout))
+        .max_lifetime(Some(config.max_lifetime))
+        .connect(database_url)
+        .await?;
+    
+    tracing::info!(
+        "Database connection pool created successfully (min: {}, max: {})",
+        config.min_connections,
+        config.max_connections
+    );
     Ok(pool)
 }
 
