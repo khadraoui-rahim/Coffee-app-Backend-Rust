@@ -1,0 +1,554 @@
+ANALYTICS API DOCUMENTATION
+===========================
+
+Base Path: /api/v1/admin/analytics
+Authentication: Required (Admin role)
+
+All endpoints require a valid JWT token with admin role in the Authorization header:
+Authorization: Bearer <token>
+
+Response Format:
+All endpoints return responses in the following format:
+{
+  "success": true/false,
+  "data": <response data> or null,
+  "error": <error message> or null,
+  "metadata": {
+    "timestamp": "ISO 8601 timestamp",
+    "queryParams": { ... },
+    "executionTimeMs": <number>
+  }
+}
+
+Common Query Parameters:
+- startDate: ISO 8601 date (e.g., "2024-01-01")
+- endDate: ISO 8601 date (e.g., "2024-01-31")
+- period: "daily", "weekly", or "monthly"
+- limit: Positive integer (max 100)
+
+Error Responses:
+- 400 Bad Request: Invalid query parameters
+- 401 Unauthorized: Missing or invalid authentication token
+- 403 Forbidden: Insufficient permissions (admin role required)
+- 404 Not Found: Resource not found
+- 503 Service Unavailable: Query timeout (> 2 seconds)
+- 500 Internal Server Error: Server error
+
+================================================================================
+SALES STATISTICS ENDPOINTS
+================================================================================
+
+1. GET /sales/total
+   Description: Get total sales count for a time period
+   
+   Query Parameters:
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   - Default: Last 30 days if not specified
+   
+   Example Request:
+   GET /api/v1/admin/analytics/sales/total?startDate=2024-01-01&endDate=2024-01-31
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "totalSales": 1250,
+       "period": {
+         "startDate": "2024-01-01T00:00:00Z",
+         "endDate": "2024-01-31T23:59:59Z"
+       }
+     },
+     "error": null,
+     "metadata": {
+       "timestamp": "2024-03-04T10:30:00Z",
+       "queryParams": {
+         "startDate": "2024-01-01",
+         "endDate": "2024-01-31"
+       },
+       "executionTimeMs": 45
+     }
+   }
+
+2. GET /sales/by-period
+   Description: Get sales aggregated by time period
+   
+   Query Parameters:
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   - period (required): "daily", "weekly", or "monthly"
+   
+   Example Request:
+   GET /api/v1/admin/analytics/sales/by-period?period=weekly&startDate=2024-01-01&endDate=2024-01-31
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "salesByPeriod": [
+         {
+           "period": "2024-W01",
+           "sales": 320,
+           "startDate": "2024-01-01T00:00:00Z",
+           "endDate": "2024-01-07T23:59:59Z"
+         },
+         {
+           "period": "2024-W02",
+           "sales": 285,
+           "startDate": "2024-01-08T00:00:00Z",
+           "endDate": "2024-01-14T23:59:59Z"
+         }
+       ],
+       "totalSales": 1250
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+3. GET /sales/trends
+   Description: Get sales trends over time
+   
+   Query Parameters:
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   - period (optional): "daily", "weekly", or "monthly" (default: daily)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/sales/trends?period=daily&startDate=2024-01-01&endDate=2024-01-07
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "trends": [
+         {
+           "timestamp": "2024-01-01T00:00:00Z",
+           "value": 45
+         },
+         {
+           "timestamp": "2024-01-02T00:00:00Z",
+           "value": 52
+         }
+       ]
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+================================================================================
+POPULAR COFFEES ENDPOINTS
+================================================================================
+
+4. GET /coffees/most-ordered
+   Description: Get most ordered coffees ranked by order count
+   
+   Query Parameters:
+   - limit (optional): Number of results (default: 10, max: 100)
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/coffees/most-ordered?limit=5
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "coffees": [
+         {
+           "coffeeId": 1,
+           "coffeeName": "Espresso",
+           "orderCount": 450,
+           "rank": 1
+         },
+         {
+           "coffeeId": 2,
+           "coffeeName": "Cappuccino",
+           "orderCount": 380,
+           "rank": 2
+         }
+       ]
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+5. GET /coffees/highest-rated
+   Description: Get highest rated coffees ranked by average rating
+   
+   Query Parameters:
+   - limit (optional): Number of results (default: 10, max: 100)
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/coffees/highest-rated?limit=5
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "coffees": [
+         {
+           "coffeeId": 3,
+           "coffeeName": "Latte",
+           "averageRating": 4.8,
+           "reviewCount": 125,
+           "rank": 1
+         }
+       ]
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+6. GET /coffees/trending
+   Description: Get trending coffees based on order count comparison
+   
+   Query Parameters:
+   - startDate (optional): Start date for current period
+   - endDate (optional): End date for current period
+   - compareStartDate (optional): Start date for comparison period
+   - compareEndDate (optional): End date for comparison period
+   - limit (optional): Number of results (default: 10, max: 100)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/coffees/trending?limit=5
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "trending": [
+         {
+           "coffeeId": 5,
+           "coffeeName": "Mocha",
+           "currentOrders": 120,
+           "previousOrders": 80,
+           "trendPercentage": 50.0,
+           "rank": 1
+         }
+       ]
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+================================================================================
+REVENUE REPORTS ENDPOINTS
+================================================================================
+
+7. GET /revenue/by-period
+   Description: Get revenue aggregated by time period
+   
+   Query Parameters:
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   - period (required): "daily", "weekly", or "monthly"
+   
+   Example Request:
+   GET /api/v1/admin/analytics/revenue/by-period?period=monthly&startDate=2024-01-01&endDate=2024-12-31
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "revenueByPeriod": [
+         {
+           "period": "2024-01",
+           "revenue": 12450.75,
+           "orderCount": 320,
+           "startDate": "2024-01-01T00:00:00Z",
+           "endDate": "2024-01-31T23:59:59Z"
+         }
+       ],
+       "totalRevenue": 145890.50
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+   
+   Note: All revenue values have exactly 2 decimal places
+
+8. GET /revenue/by-coffee
+   Description: Get revenue grouped by coffee type
+   
+   Query Parameters:
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   - limit (optional): Number of results (default: 10, max: 100)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/revenue/by-coffee?limit=5
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "revenueByCoffee": [
+         {
+           "coffeeId": 1,
+           "coffeeName": "Espresso",
+           "revenue": 15680.25,
+           "orderCount": 450,
+           "averageOrderValue": 34.85
+         }
+       ],
+       "totalRevenue": 145890.50
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+================================================================================
+RATING INSIGHTS ENDPOINTS
+================================================================================
+
+9. GET /ratings/average
+   Description: Get average rating with optional coffee filter
+   
+   Query Parameters:
+   - coffeeId (optional): Filter by specific coffee ID
+   - startDate (optional): Start date (ISO 8601)
+   - endDate (optional): End date (ISO 8601)
+   
+   Example Request:
+   GET /api/v1/admin/analytics/ratings/average?coffeeId=1
+   
+   Example Response:
+   {
+     "success": true,
+     "data": {
+       "averageRating": 4.5,
+       "totalReviews": 125,
+       "coffeeId": 1,
+       "coffeeName": "Espresso"
+     },
+     "error": null,
+     "metadata": { ... }
+   }
+
+10. GET /ratings/distribution
+    Description: Get rating distribution grouped by rating value (1-5)
+    
+    Query Parameters:
+    - coffeeId (optional): Filter by specific coffee ID
+    - startDate (optional): Start date (ISO 8601)
+    - endDate (optional): End date (ISO 8601)
+    
+    Example Request:
+    GET /api/v1/admin/analytics/ratings/distribution
+    
+    Example Response:
+    {
+      "success": true,
+      "data": {
+        "distribution": [
+          {
+            "rating": 5,
+            "count": 450,
+            "percentage": 45.0
+          },
+          {
+            "rating": 4,
+            "count": 350,
+            "percentage": 35.0
+          },
+          {
+            "rating": 3,
+            "count": 150,
+            "percentage": 15.0
+          },
+          {
+            "rating": 2,
+            "count": 40,
+            "percentage": 4.0
+          },
+          {
+            "rating": 1,
+            "count": 10,
+            "percentage": 1.0
+          }
+        ],
+        "totalReviews": 1000
+      },
+      "error": null,
+      "metadata": { ... }
+    }
+
+11. GET /ratings/trends
+    Description: Get rating trends over time
+    
+    Query Parameters:
+    - coffeeId (optional): Filter by specific coffee ID
+    - startDate (optional): Start date (ISO 8601)
+    - endDate (optional): End date (ISO 8601)
+    - period (optional): "daily", "weekly", or "monthly" (default: daily)
+    
+    Example Request:
+    GET /api/v1/admin/analytics/ratings/trends?period=weekly
+    
+    Example Response:
+    {
+      "success": true,
+      "data": {
+        "trends": [
+          {
+            "timestamp": "2024-01-01T00:00:00Z",
+            "value": 4.3,
+            "reviewCount": 45
+          },
+          {
+            "timestamp": "2024-01-08T00:00:00Z",
+            "value": 4.5,
+            "reviewCount": 52
+          }
+        ]
+      },
+      "error": null,
+      "metadata": { ... }
+    }
+
+================================================================================
+VALIDATION RULES
+================================================================================
+
+Date Parameters:
+- Must be in ISO 8601 format (YYYY-MM-DD)
+- startDate must be before endDate
+- Maximum date range: 1 year
+- All dates converted to UTC
+
+Period Parameters:
+- Valid values: "daily", "weekly", "monthly"
+- Case-insensitive
+
+Limit Parameters:
+- Must be positive integer
+- Minimum: 1
+- Maximum: 100
+- Default: 10
+
+Coffee ID Parameters:
+- Must be positive integer
+- Must exist in database
+
+================================================================================
+PERFORMANCE CONSIDERATIONS
+================================================================================
+
+Caching:
+- All analytics queries are cached for 5 minutes
+- Cache key format: analytics:{endpoint}:{hash(params)}
+- Cache automatically invalidated after TTL
+
+Query Timeouts:
+- Maximum query execution time: 2 seconds
+- Queries exceeding timeout return 503 Service Unavailable
+
+Database Indexes:
+- Orders table: (created_at, status), (coffee_id, status)
+- Reviews table: (coffee_id, rating), (created_at, coffee_id)
+
+Performance Targets:
+- p50 response time: < 200ms
+- p95 response time: < 500ms
+- p99 response time: < 1000ms
+
+================================================================================
+SECURITY CONSIDERATIONS
+================================================================================
+
+Authentication:
+- All endpoints require valid JWT token
+- Token must be in Authorization header: Bearer <token>
+- Token must not be expired
+
+Authorization:
+- All endpoints require admin role
+- Non-admin users receive 403 Forbidden
+
+Data Privacy:
+- Error messages are sanitized to prevent information leakage
+- Database errors do not expose internal details
+- SQL injection prevented through parameterized queries
+
+Rate Limiting:
+- Recommended: 100 requests per minute per user
+- Implement at API gateway level
+
+================================================================================
+DEPLOYMENT CHECKLIST
+================================================================================
+
+Database:
+[ ] Run all migrations in order
+[ ] Verify indexes are created: EXPLAIN ANALYZE queries
+[ ] Seed initial data if needed
+[ ] Verify database connection pool settings
+
+Environment Variables:
+[ ] DATABASE_URL: PostgreSQL connection string
+[ ] JWT_SECRET: Secret key for JWT validation
+[ ] CACHE_TTL: Cache TTL in seconds (default: 300)
+[ ] QUERY_TIMEOUT: Query timeout in seconds (default: 2)
+[ ] LOG_LEVEL: Logging level (info, warn, error)
+
+Services:
+[ ] Database server running and accessible
+[ ] Authentication service integrated
+[ ] Cache service running (Redis or in-memory)
+[ ] Logging infrastructure configured
+
+Testing:
+[ ] All unit tests pass
+[ ] All property tests pass (30 properties)
+[ ] Integration tests pass
+[ ] Load testing completed (100K orders)
+[ ] Performance targets met (< 2s queries)
+
+Monitoring:
+[ ] Request logging enabled
+[ ] Error tracking configured
+[ ] Performance metrics collection enabled
+[ ] Slow query alerts configured (> 1s)
+[ ] Cache hit rate monitoring enabled
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Common Issues:
+
+1. 401 Unauthorized
+   - Check Authorization header is present
+   - Verify JWT token is valid and not expired
+   - Verify JWT_SECRET matches authentication service
+
+2. 403 Forbidden
+   - Verify user has admin role in JWT claims
+   - Check role claim format matches expected format
+
+3. 400 Bad Request
+   - Check query parameter formats (dates, integers)
+   - Verify startDate is before endDate
+   - Check limit is within valid range (1-100)
+
+4. 503 Service Unavailable
+   - Query exceeded 2 second timeout
+   - Check database performance and indexes
+   - Consider reducing date range or adding filters
+
+5. 500 Internal Server Error
+   - Check application logs for details
+   - Verify database connection is healthy
+   - Check all required environment variables are set
+
+Performance Issues:
+- Verify database indexes exist
+- Check cache hit rate (should be > 80%)
+- Monitor slow query logs
+- Consider adding more specific filters to queries
+- Verify database connection pool is not exhausted
+
+================================================================================

@@ -1,7 +1,7 @@
 // Sales aggregation service
 // Business logic for calculating sales statistics and trends
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use crate::analytics::{
     repositories::OrdersAnalyticsRepository,
     types::{SalesStatistics, SalesByPeriod, SalesTrend, TimePeriod, DateRange},

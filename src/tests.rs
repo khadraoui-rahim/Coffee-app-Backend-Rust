@@ -75,12 +75,18 @@ async fn create_test_app(pool: PgPool) -> TestServer {
     let coffee_repo = crate::orders::CoffeeRepository::new(pool.clone());
     let order_service = crate::orders::OrderService::new(orders_repo, order_items_repo.clone(), coffee_repo);
     
+    // Initialize business rules engine
+    let business_rules_engine = std::sync::Arc::new(
+        crate::business_rules::BusinessRulesEngine::new(pool.clone())
+    );
+    
     let state = AppState { 
         db: pool.clone(),
         auth_service: auth_service.clone(),
         review_service,
         order_service,
         order_items_repo,
+        business_rules_engine,
     };
     
     use axum::middleware::from_fn;

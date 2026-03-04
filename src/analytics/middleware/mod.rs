@@ -1,6 +1,8 @@
 // Analytics middleware
 // Authentication and authorization middleware for admin-only access to analytics endpoints
 
+pub mod logging;
+
 use axum::{
     extract::Request,
     http::StatusCode,
@@ -8,6 +10,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use crate::auth::{error::AuthError, middleware::RequireRole, models::Role};
+
+pub use logging::logging_middleware;
 
 /// Result type for authentication operations
 #[derive(Debug)]
